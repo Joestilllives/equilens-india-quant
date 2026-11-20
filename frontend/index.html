@@ -1,0 +1,704 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>EquiLens India — NSE NIFTY 50 Quantitative Shortlister &amp; ML Analysis</title>
+  <meta name="description" content="Full-stack Indian stock market (NSE NIFTY 50) analysis with Triple-Barrier walk-forward ML, India VIX regime gating, promoter/insider disclosures, earnings surprises, prediction journal, catalyst alerts, and stress testing." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="container">
+      <div class="topbar-row">
+        <div class="brand">
+          <div class="brand-mark">IN</div>
+          <div>
+            <h1>EquiLens India Quant</h1>
+            <div class="brand-sub">NSE Live Data &middot; V6 Sentiment &amp; Macro ML &middot; 4-Tranche Corr-Penalized &middot; 18% Vol Target &middot; 6-Gauge Gate</div>
+          </div>
+        </div>
+
+        <div class="topbar-actions">
+          <form id="add-ticker-form" class="add-ticker-form">
+            <input
+              id="add-ticker-input"
+              class="input input-sm"
+              type="text"
+              placeholder="Add NSE ticker (e.g. ZOMATO)"
+              maxlength="16"
+              autocomplete="off"
+            />
+            <button id="btn-add-ticker" type="submit" class="btn btn-primary">+ Fetch NSE</button>
+          </form>
+
+          <button id="btn-sync-all" type="button" class="btn">Sync &amp; Retrain</button>
+          <button id="btn-theme" type="button" class="btn" title="Toggle Light / Dark theme">Light Mode</button>
+        </div>
+      </div>
+
+      <div class="nav-bar">
+        <nav class="nav-tabs" aria-label="Primary Views">
+          <button type="button" class="nav-tab active" data-view="shortlist">NSE Shortlist</button>
+          <button type="button" class="nav-tab" data-view="chart">Chart &amp; Catalysts</button>
+          <button type="button" class="nav-tab" data-view="model">ML Validation</button>
+          <button type="button" class="nav-tab" data-view="stress">Portfolio &amp; Stress Tests</button>
+          <button type="button" class="nav-tab" data-view="execution">Execution &amp; Paper Ledger</button>
+          <button type="button" class="nav-tab" data-view="journal">Prediction Journal</button>
+          <button type="button" class="nav-tab" data-view="alerts">Alerts <span id="tab-alert-badge" class="badge badge-accent" style="margin-left:4px; display:none;">0</span></button>
+        </nav>
+
+        <div id="bench-strip" class="bench-strip tabular">
+          <span>Loading live NSE market status...</span>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main class="main">
+    <div class="container">
+
+      <!-- ============================================================
+           VIEW 1: NSE OPPORTUNITY SHORTLIST
+      ============================================================= -->
+      <section id="view-shortlist" class="view-section active">
+        <div class="stack">
+          <!-- India Macro Regime Banner -->
+          <div class="panel" style="padding: 12px 16px;">
+            <div style="display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:12px;">
+              <div style="display:flex; align-items:center; flex-wrap:wrap; gap:10px;">
+                <span class="text-muted" style="font-size:12px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em;">India Macro Regime</span>
+                <span id="regime-badge" class="badge badge-neutral">Loading...</span>
+              </div>
+              <div id="regime-metrics" class="pill-group tabular" style="font-size:12px; gap:16px;"></div>
+            </div>
+          </div>
+
+          <!-- Top 4 Shortlisted NSE Candidates -->
+          <div>
+            <div class="panel-header" style="margin-bottom: 10px;">
+              <div>
+                <h2 class="panel-title">Top Shortlisted NSE Bullish Candidates</h2>
+                <p class="panel-sub">Ranked by Triple-Barrier ML probability, 20D alpha vs. NIFTY 50, momentum, valuation, PEAD results quality, promoter/insider trades &amp; Indian market news</p>
+              </div>
+              <div id="ml-badge-strip" class="pill-group"></div>
+            </div>
+            <div id="top-picks-grid" class="grid-4"></div>
+          </div>
+
+          <!-- Interactive Factor Weights & Filters -->
+          <div class="panel">
+            <div class="panel-header">
+              <div>
+                <h3 class="panel-title">5-Pillar Quant Weights &amp; NSE Setup Scanner</h3>
+                <p class="panel-sub">Re-rank the NIFTY 50 &amp; NSE blue-chip universe live based on your preferred strategy profile</p>
+              </div>
+              <div class="pill-group" id="preset-group">
+                <button type="button" class="pill active" data-preset="balanced">Balanced Quant</button>
+                <button type="button" class="pill" data-preset="ml">Triple-Barrier ML</button>
+                <button type="button" class="pill" data-preset="momentum">Momentum Leaders</button>
+                <button type="button" class="pill" data-preset="value">Value + PEAD Quality</button>
+              </div>
+            </div>
+
+            <div class="grid-weights" style="margin-bottom: 14px;">
+              <div class="slider-item">
+                <div class="slider-head"><span>ML Triple-Barrier</span><strong id="lbl-w-ml" class="tabular">30%</strong></div>
+                <input id="w-ml" type="range" min="0" max="60" step="5" value="30" />
+              </div>
+              <div class="slider-item">
+                <div class="slider-head"><span>Momentum &amp; RS</span><strong id="lbl-w-mom" class="tabular">25%</strong></div>
+                <input id="w-mom" type="range" min="0" max="60" step="5" value="25" />
+              </div>
+              <div class="slider-item">
+                <div class="slider-head"><span>Valuation &amp; Target</span><strong id="lbl-w-val" class="tabular">15%</strong></div>
+                <input id="w-val" type="range" min="0" max="60" step="5" value="15" />
+              </div>
+              <div class="slider-item">
+                <div class="slider-head"><span>Quality &amp; PEAD</span><strong id="lbl-w-qual" class="tabular">15%</strong></div>
+                <input id="w-qual" type="range" min="0" max="60" step="5" value="15" />
+              </div>
+              <div class="slider-item">
+                <div class="slider-head"><span>Insiders &amp; News</span><strong id="lbl-w-sent" class="tabular">15%</strong></div>
+                <input id="w-sent" type="range" min="0" max="60" step="5" value="15" />
+              </div>
+            </div>
+
+            <div class="chart-toolbar" style="margin-bottom: 0; padding-top: 10px; border-top: 1px solid var(--border-subtle);">
+              <div class="pill-group">
+                <select id="filter-sector" class="select">
+                  <option value="ALL">All Sectors</option>
+                </select>
+                <select id="filter-setup" class="select">
+                  <option value="ALL">All Setups &amp; Signals</option>
+                  <option value="breakout_20d">20D Breakout + Volume</option>
+                  <option value="stage2_uptrend">Stage-2 Uptrend</option>
+                  <option value="uptrend_pullback">Uptrend Pullback</option>
+                  <option value="insider_buy">Promoter / Insider Buying</option>
+                  <option value="rs_leader">RS Leader vs NIFTY 50</option>
+                  <option value="macd_cross">MACD Bull Cross</option>
+                  <option value="oversold_watch">Oversold RSI Watch</option>
+                  <option value="earnings_soon">Upcoming Results (&le;10D)</option>
+                </select>
+                <input id="filter-search" class="input input-sm" type="text" placeholder="Filter NSE symbol or name..." />
+              </div>
+              <span id="shortlist-count" class="text-muted tabular" style="font-size: 12px;">0 stocks</span>
+            </div>
+          </div>
+
+          <!-- Ranked Shortlist Table -->
+          <div class="panel">
+            <div class="table-wrap">
+              <table class="data-table tabular">
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>NSE Symbol</th>
+                    <th>24D Trend</th>
+                    <th class="num">Price (₹)</th>
+                    <th class="num">1D %</th>
+                    <th class="num">TB Win %</th>
+                    <th class="num">ML Alpha</th>
+                    <th class="num">ATR Target / Stop</th>
+                    <th class="num">Mkt Cap</th>
+                    <th>Active Signals</th>
+                    <th class="num">Score</th>
+                  </tr>
+                </thead>
+                <tbody id="shortlist-table-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================
+           VIEW 2: CHART, FORECAST CONE & CATALYSTS
+      ============================================================= -->
+      <section id="view-chart" class="view-section">
+        <div class="grid-chart-layout">
+          <div class="stack">
+            <div class="panel">
+              <div class="stock-head">
+                <div>
+                  <div style="display:flex; align-items:center; flex-wrap:wrap; gap:8px;">
+                    <select id="chart-symbol-select" class="select" style="font-weight:700; font-size:14px;"></select>
+                    <span id="det-name" class="text-muted"></span>
+                    <span id="det-sector" class="badge badge-neutral"></span>
+                  </div>
+                  <div style="display:flex; align-items:baseline; flex-wrap:wrap; gap:10px; margin-top:6px;" class="tabular">
+                    <span id="det-price" class="stock-price-big">₹0.00</span>
+                    <span id="det-chg" style="font-weight:600; font-size:14px;"></span>
+                    <span id="det-source" class="text-muted" style="font-size:12px;"></span>
+                  </div>
+                </div>
+                <div class="pill-group">
+                  <button id="btn-det-star" type="button" class="btn">&#9734; Star</button>
+                  <span id="det-conviction-badge" class="badge badge-accent">Score --</span>
+                </div>
+              </div>
+
+              <div class="chart-toolbar">
+                <div class="pill-group" id="tf-group">
+                  <button type="button" class="pill" data-tf="3M">3M</button>
+                  <button type="button" class="pill active" data-tf="6M">6M</button>
+                  <button type="button" class="pill" data-tf="1Y">1Y</button>
+                  <button type="button" class="pill" data-tf="3Y">3Y</button>
+                </div>
+
+                <div class="pill-group">
+                  <button type="button" class="pill pill-subtle active" data-ov="cone">ML Forecast Cone</button>
+                  <button type="button" class="pill pill-subtle active" data-ov="barriers">ATR Target/Stop</button>
+                  <button type="button" class="pill pill-subtle active" data-ov="sma20">SMA 20</button>
+                  <button type="button" class="pill pill-subtle active" data-ov="sma50">SMA 50</button>
+                  <button type="button" class="pill pill-subtle" data-ov="sma200">SMA 200</button>
+                  <select id="osc-select" class="select">
+                    <option value="rsi">Sub-pane: RSI (14)</option>
+                    <option value="macd">Sub-pane: MACD</option>
+                    <option value="none">Sub-pane: None</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="readout-bar tabular">
+                <div id="det-readout-ohlcv" class="readout-group"></div>
+                <div id="det-readout-ind" class="readout-group"></div>
+              </div>
+
+              <div id="main-canvas-wrap" class="canvas-main-wrap">
+                <canvas id="main-chart-canvas"></canvas>
+              </div>
+              <div id="osc-canvas-wrap" class="canvas-osc-wrap">
+                <div id="osc-legend" class="osc-legend tabular"></div>
+                <canvas id="osc-chart-canvas"></canvas>
+              </div>
+              <div style="display:flex; justify-content:space-between; font-size:12px; color:var(--text-muted); margin-top:6px;">
+                <span>Green/Red guides show Triple-Barrier ATR Target (+2.5×ATR) and Stop-Loss (-1.5×ATR) in INR (₹)</span>
+                <span id="det-range-lbl" class="tabular"></span>
+              </div>
+            </div>
+
+            <!-- Earnings PEAD + Promoter / Insider Activity -->
+            <div class="grid-2">
+              <div class="panel">
+                <h3 class="section-label">Shareholding &amp; Quarterly Results (PEAD)</h3>
+                <div id="det-ownership-box" class="kv-list tabular" style="margin-bottom: 12px;"></div>
+                <div id="det-earnings-box" class="table-wrap"></div>
+              </div>
+
+              <div class="panel">
+                <h3 class="section-label">Promoter &amp; Insider Disclosures (NSE / SEBI)</h3>
+                <div id="det-insiders-box" class="table-wrap" style="max-height: 295px; overflow-y: auto;"></div>
+              </div>
+            </div>
+
+            <!-- Fundamentals & Catalyst News -->
+            <div class="grid-2">
+              <div class="panel">
+                <h3 class="section-label">Fundamentals &amp; Analyst Targets</h3>
+                <div id="det-fundamentals" class="kv-list tabular"></div>
+              </div>
+              <div class="panel">
+                <div class="panel-header" style="margin-bottom:6px;">
+                  <h3 class="section-label" style="margin:0;">Catalyst-Tagged Live News</h3>
+                  <span id="det-news-badge" class="badge badge-neutral">Neutral</span>
+                </div>
+                <div id="det-news-list" style="max-height: 320px; overflow-y: auto;"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Right Sidebar -->
+          <aside class="stack">
+            <div class="panel">
+              <h3 class="section-label">Triple-Barrier Trade Plan &amp; ML</h3>
+              <div id="det-ml-box" class="kv-list tabular"></div>
+            </div>
+
+            <div class="panel">
+              <h3 class="section-label">5-Pillar Quant Breakdown</h3>
+              <div id="det-pillars" class="stack" style="gap: 10px;"></div>
+            </div>
+
+            <div class="panel">
+              <h3 class="section-label">Bullish Drivers</h3>
+              <ul id="det-drivers" class="signal-list"></ul>
+              <h3 class="section-label" style="margin-top: 14px;">Risk Flags</h3>
+              <ul id="det-risks" class="signal-list"></ul>
+            </div>
+
+            <div class="panel">
+              <h3 class="section-label">Active Chart Setups</h3>
+              <div id="det-setups" class="pill-group"></div>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <!-- ============================================================
+           VIEW 3: ML VALIDATION & ALPHA AUDIT
+      ============================================================= -->
+      <section id="view-model" class="view-section">
+        <div class="stack">
+          <div class="panel">
+            <div class="panel-header">
+              <div>
+                <h2 class="panel-title">5-Fold Embargoed Walk-Forward ML Validation (NSE)</h2>
+                <p class="panel-sub">27 cross-sectional, sector-neutral &amp; India macro features (India VIX, USD/INR, NSE Breadth) · Dual-head Triple-Barrier + 20D Alpha vs. NIFTY 50</p>
+              </div>
+              <span id="ml-trained-lbl" class="text-muted" style="font-size:12px;"></span>
+            </div>
+            <div id="ml-kpi-grid" class="grid-4 tabular"></div>
+          </div>
+
+          <div class="grid-2">
+            <div class="panel">
+              <h3 class="section-label">Top Feature Weights (Ridge + Triple-Barrier Logit)</h3>
+              <div id="ml-feature-bars" class="stack" style="gap: 10px;"></div>
+            </div>
+
+            <div class="stack">
+              <div class="panel">
+                <h3 class="section-label">Chronological Out-of-Sample Folds</h3>
+                <div class="table-wrap">
+                  <table class="data-table tabular">
+                    <thead>
+                      <tr>
+                        <th>Fold</th>
+                        <th>Test Window</th>
+                        <th class="num">TB AUC</th>
+                        <th class="num">IC</th>
+                        <th class="num">Top-5 20D</th>
+                        <th class="num">NIFTY 20D</th>
+                      </tr>
+                    </thead>
+                    <tbody id="ml-folds-body"></tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div class="panel">
+                <h3 class="section-label">India VIX Regime-Conditional Alpha</h3>
+                <div id="ml-regime-box" class="kv-list tabular"></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <h3 class="section-label">Live NSE Triple-Barrier &amp; 20D Alpha Rankings</h3>
+            <div class="table-wrap">
+              <table class="data-table tabular">
+                <thead>
+                  <tr>
+                    <th>NSE Symbol</th>
+                    <th class="num">TB Win Prob</th>
+                    <th class="num">20D Alpha</th>
+                    <th class="num">Beat NIFTY %</th>
+                    <th class="num">ATR Target</th>
+                    <th class="num">ATR Stop</th>
+                    <th class="num">R:R</th>
+                    <th class="num">60D P10 – P90 Cone</th>
+                  </tr>
+                </thead>
+                <tbody id="ml-preds-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================
+           VIEW 4: PORTFOLIO BACKTEST & QUANTITATIVE STRESS TESTS
+      ============================================================= -->
+      <section id="view-stress" class="view-section">
+        <div class="stack">
+          <div class="panel">
+            <div class="panel-header">
+              <div>
+                <h2 class="panel-title">Out-of-Sample NSE Top-K Portfolio Backtest &amp; Stress Suite</h2>
+                <p class="panel-sub">Tests strictly out-of-sample walk-forward NSE picks under Indian STT/brokerage friction, India VIX stress, 1,000-path block bootstrap &amp; weight shocks</p>
+              </div>
+              <span id="stress-verdict-badge" class="badge badge-accent">Running...</span>
+            </div>
+
+            <div class="chart-toolbar" style="margin-bottom: 14px;">
+              <div class="pill-group">
+                <label class="text-muted" style="font-size:12px;">Top K Stocks
+                  <select id="st-topk" class="select">
+                    <option value="6">Top 6</option>
+                    <option value="8">Top 8</option>
+                    <option value="10" selected>Top 10 (V6 Optimal)</option>
+                    <option value="12">Top 12</option>
+                  </select>
+                </label>
+                <label class="text-muted" style="font-size:12px;">Rebalance
+                  <select id="st-rebal" class="select">
+                    <option value="30">Every 30D</option>
+                    <option value="40" selected>Every 40D (Low STT)</option>
+                    <option value="60">Every 60D (Lowest Tax)</option>
+                  </select>
+                </label>
+                <label class="text-muted" style="font-size:12px;">Risk Profile
+                  <select id="st-risk-profile" class="select">
+                    <option value="balanced" selected>Balanced (18% Vol Target)</option>
+                    <option value="growth">Growth (Uncapped)</option>
+                  </select>
+                </label>
+                <label class="text-muted" style="font-size:12px; display:inline-flex; align-items:center; gap:6px;">
+                  <input id="st-regime-gate" type="checkbox" checked /> 6-Gauge Sentiment Risk Gate
+                </label>
+                <button id="btn-run-stress" type="button" class="btn btn-primary">Run Stress Suite</button>
+              </div>
+              <span id="st-period-lbl" class="text-muted tabular" style="font-size:12px;"></span>
+            </div>
+
+            <div id="st-kpi-grid" class="grid-4 tabular" style="margin-bottom: 14px;"></div>
+
+            <div style="display:flex; justify-content:space-between; font-size:12px; margin-bottom:4px;">
+              <span class="text-muted">Strictly Out-of-Sample Portfolio Equity Curve (₹10,00,000 Initial)</span>
+              <span class="pill-group" style="gap:12px;">
+                <span><span style="display:inline-block; width:10px; height:2px; background:var(--chart-1); vertical-align:middle; margin-right:5px;"></span>Top-K NSE ML Portfolio</span>
+                <span><span style="display:inline-block; width:10px; height:2px; background:var(--text-muted); vertical-align:middle; margin-right:5px;"></span>NIFTY 50 Benchmark</span>
+              </span>
+            </div>
+            <div class="canvas-sub-wrap">
+              <canvas id="stress-equity-canvas"></canvas>
+            </div>
+          </div>
+
+          <div class="grid-2">
+            <div class="panel">
+              <h3 class="section-label">1. Indian STT + Brokerage + Slippage Stress</h3>
+              <div class="table-wrap">
+                <table class="data-table tabular">
+                  <thead>
+                    <tr>
+                      <th>Round-Trip Cost</th>
+                      <th class="num">CAGR</th>
+                      <th class="num">Excess vs NIFTY</th>
+                      <th class="num">Sharpe</th>
+                      <th class="num">Max DD</th>
+                      <th class="num">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody id="st-slippage-body"></tbody>
+                </table>
+              </div>
+            </div>
+
+            <div class="panel">
+              <h3 class="section-label">2. Historical India VIX &amp; NIFTY Drawdown Replay</h3>
+              <div class="table-wrap">
+                <table class="data-table tabular">
+                  <thead>
+                    <tr>
+                      <th>Market Regime</th>
+                      <th class="num">Days</th>
+                      <th class="num">Portfolio</th>
+                      <th class="num">NIFTY 50</th>
+                      <th class="num">Spread</th>
+                    </tr>
+                  </thead>
+                  <tbody id="st-regime-body"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <div class="grid-2">
+            <div class="panel">
+              <h3 class="section-label">3. 1,000-Path Block-Bootstrap Tail Risk Stress</h3>
+              <div id="st-bootstrap-box" class="kv-list tabular"></div>
+            </div>
+
+            <div class="panel">
+              <h3 class="section-label">4. Single-Stock NSE Rule Backtester (₹1,00,000 · 15 bps)</h3>
+              <div class="pill-group" style="margin-bottom:10px;">
+                <select id="bt-symbol" class="select"></select>
+                <select id="bt-strategy" class="select">
+                  <option value="sma_crossover">SMA Crossover (10/35)</option>
+                  <option value="rsi_trend">RSI Pullback in Uptrend</option>
+                  <option value="macd_momentum">MACD Momentum &gt; SMA 50</option>
+                </select>
+                <button id="btn-run-bt" type="button" class="btn">Run</button>
+              </div>
+              <div id="bt-mini-kpis" class="kv-list tabular"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================
+           VIEW 5: LIVE EXECUTION, TRADE TICKET & PAPER LEDGER
+      ============================================================= -->
+      <section id="view-execution" class="view-section">
+        <div class="stack">
+          <div class="panel">
+            <div class="panel-header">
+              <div>
+                <h2 class="panel-title">Live NSE Rebalance &amp; Trade-Ticket Generator (V6 Top-10)</h2>
+                <p class="panel-sub">Correlation-penalized sizing, Max 2 per NSE sector (&ge;5 sectors), 2&times;K rank-buffer hysteresis, 6-Gauge Sentiment Gate, Earnings Blackout Guard &amp; Indian STT / 20% STCG estimates</p>
+              </div>
+              <div class="pill-group">
+                <button id="btn-gen-ticket" type="button" class="btn">Refresh Ticket</button>
+                <button id="btn-commit-paper" type="button" class="btn btn-primary">Commit to Paper Ledger</button>
+              </div>
+            </div>
+
+            <div class="chart-toolbar" style="margin-bottom: 14px;">
+              <div class="pill-group" style="flex-wrap:wrap; gap:10px;">
+                <label class="text-muted" style="font-size:12px;">Capital (₹)
+                  <input id="ex-capital" class="input input-sm tabular" type="number" min="25000" step="50000" value="1000000" style="width:130px;" />
+                </label>
+                <label class="text-muted" style="font-size:12px;">Risk Profile
+                  <select id="ex-risk-profile" class="select">
+                    <option value="balanced" selected>Balanced (18% Vol Target)</option>
+                    <option value="growth">Growth (Uncapped)</option>
+                  </select>
+                </label>
+                <label class="text-muted" style="font-size:12px;">Target Stocks
+                  <select id="ex-topk" class="select">
+                    <option value="8">Top 8</option>
+                    <option value="10" selected>Top 10 (V6 Optimal)</option>
+                    <option value="12">Top 12</option>
+                  </select>
+                </label>
+                <label class="text-muted" style="font-size:12px; display:inline-flex; align-items:center; gap:6px;">
+                  <input id="ex-skip-blackout" type="checkbox" /> Skip Earnings Blackout (&le;5D)
+                </label>
+                <label class="text-muted" style="font-size:12px; display:inline-flex; align-items:center; gap:6px;">
+                  <input id="ex-use-paper" type="checkbox" checked /> Rebalance Against Paper Holdings
+                </label>
+              </div>
+              <span id="ex-asof-lbl" class="text-muted tabular" style="font-size:12px;"></span>
+            </div>
+
+            <div id="ex-kpi-grid" class="grid-4 tabular" style="margin-bottom: 14px;"></div>
+
+            <div class="table-wrap">
+              <table class="data-table tabular">
+                <thead>
+                  <tr>
+                    <th>Action</th>
+                    <th>NSE Symbol</th>
+                    <th>Sector</th>
+                    <th class="num">V6 Rank</th>
+                    <th class="num">Price (₹)</th>
+                    <th class="num">Target Wt</th>
+                    <th class="num">Shares (&Delta;)</th>
+                    <th class="num">Order Value</th>
+                    <th class="num">+2ATR / -2ATR</th>
+                    <th>Guard / Rationale</th>
+                  </tr>
+                </thead>
+                <tbody id="ex-orders-body"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-header">
+              <div>
+                <h2 class="panel-title">Forward-Proof Paper-Trading Ledger (Zero Survivorship Bias)</h2>
+                <p class="panel-sub">Locks real NSE closing fills in SQLite and marks daily P&amp;L + 6.2% LiquidBees cash yield strictly forward against NIFTY 50</p>
+              </div>
+              <button id="btn-reset-paper" type="button" class="btn">Reset Paper Account</button>
+            </div>
+
+            <div id="paper-kpi-grid" class="grid-4 tabular" style="margin-bottom: 14px;"></div>
+
+            <div class="grid-2">
+              <div>
+                <h3 class="section-label">Open Paper Positions (Marked-to-Market)</h3>
+                <div class="table-wrap" style="max-height: 360px; overflow-y: auto;">
+                  <table class="data-table tabular">
+                    <thead>
+                      <tr>
+                        <th>Symbol</th>
+                        <th class="num">Shares</th>
+                        <th class="num">Avg Cost</th>
+                        <th class="num">Last (₹)</th>
+                        <th class="num">Value (₹)</th>
+                        <th class="num">P&amp;L</th>
+                      </tr>
+                    </thead>
+                    <tbody id="paper-pos-body"></tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div>
+                <h3 class="section-label">Timestamped Paper Trade Audit Log</h3>
+                <div class="table-wrap" style="max-height: 360px; overflow-y: auto;">
+                  <table class="data-table tabular">
+                    <thead>
+                      <tr>
+                        <th>Date</th>
+                        <th>Action</th>
+                        <th>Symbol</th>
+                        <th class="num">Qty</th>
+                        <th class="num">Fill (₹)</th>
+                        <th class="num">STT/Fee</th>
+                      </tr>
+                    </thead>
+                    <tbody id="paper-trades-body"></tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================
+           VIEW 6: PREDICTION JOURNAL & CALIBRATION
+      ============================================================= -->
+      <section id="view-journal" class="view-section">
+        <div class="stack">
+          <div class="panel">
+            <div class="panel-header">
+              <div>
+                <h2 class="panel-title">Prediction Journal &amp; Live Calibration Scorecard</h2>
+                <p class="panel-sub">Logs every Top-5 NSE shortlist pick and grades actual +5D / +20D / +60D returns against NIFTY 50</p>
+              </div>
+              <button id="btn-log-journal" type="button" class="btn btn-primary">Snapshot &amp; Grade Today's Picks</button>
+            </div>
+            <div id="journal-kpi-grid" class="grid-4 tabular"></div>
+          </div>
+
+          <div class="panel">
+            <h3 class="section-label">Probability Calibration Audit (Do Higher Model Probabilities Actually Win More Often?)</h3>
+            <div class="table-wrap">
+              <table class="data-table tabular">
+                <thead>
+                  <tr>
+                    <th>Predicted Triple-Barrier Bucket</th>
+                    <th class="num">Observations</th>
+                    <th class="num">Actual TB Win Rate</th>
+                    <th class="num">Avg Actual 20D Return</th>
+                    <th class="num">Avg Excess vs NIFTY 50</th>
+                  </tr>
+                </thead>
+                <tbody id="journal-cal-body"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="panel">
+            <h3 class="section-label">Graded NSE Prediction Ledger (Live + Monthly Walk-Forward Cohorts)</h3>
+            <div class="table-wrap" style="max-height: 460px; overflow-y: auto;">
+              <table class="data-table tabular">
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>NSE Symbol</th>
+                    <th>Type</th>
+                    <th class="num">Entry (₹)</th>
+                    <th class="num">Score</th>
+                    <th class="num">TB Prob</th>
+                    <th class="num">+5D</th>
+                    <th class="num">+20D</th>
+                    <th class="num">NIFTY 20D</th>
+                    <th class="num">Outcome</th>
+                  </tr>
+                </thead>
+                <tbody id="journal-entries-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================
+           VIEW 6: CATALYST ALERTS & DAILY SCANNER
+      ============================================================= -->
+      <section id="view-alerts" class="view-section">
+        <div class="stack">
+          <div class="panel">
+            <div class="panel-header">
+              <div>
+                <h2 class="panel-title">Automated NSE Catalyst &amp; Signal Alerts</h2>
+                <p class="panel-sub">High-conviction ML setups, promoter/insider buys, upcoming quarterly results warnings, breakouts, and India VIX regime alerts</p>
+              </div>
+              <button id="btn-scan-alerts" type="button" class="btn btn-primary">Run Catalyst Scan</button>
+            </div>
+            <div id="alerts-list" class="stack" style="gap: 10px;"></div>
+          </div>
+        </div>
+      </section>
+
+      <footer class="disclaimer">
+        <span>Data: Live NSE India 5Y OHLCV, NIFTY 50 (^NSEI), India VIX (^INDIAVIX), USD/INR, earnings surprises, promoter/insider disclosures &amp; news in local SQLite.</span>
+        <span>Quantitative research tool only — not SEBI-registered investment advice. Equity markets carry risk and past out-of-sample tests do not guarantee future returns.</span>
+      </footer>
+    </div>
+  </main>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
