@@ -530,6 +530,9 @@
                   <input id="ex-skip-blackout" type="checkbox" /> Skip Earnings Blackout (&le;5D)
                 </label>
                 <label class="text-muted" style="font-size:12px; display:inline-flex; align-items:center; gap:6px;">
+                  <input id="ex-smart-shield" type="checkbox" checked /> Smart-Money &amp; Blowup Shield
+                </label>
+                <label class="text-muted" style="font-size:12px; display:inline-flex; align-items:center; gap:6px;">
                   <input id="ex-use-paper" type="checkbox" checked /> Rebalance Against Paper Holdings
                 </label>
               </div>
@@ -605,6 +608,56 @@
                       </tr>
                     </thead>
                     <tbody id="paper-trades-body"></tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-header">
+              <div>
+                <h2 class="panel-title">Smart Money Signals (Official NSE Institutional Flows)</h2>
+                <p class="panel-sub">Real NSE Delivery Volume % &amp; Ticket Size, FII/DII Index Futures Positioning, India Midcap/Bank Liquidity Ratios &amp; NSE Bulk/Block Deals</p>
+              </div>
+              <button id="btn-sync-money" type="button" class="btn">Refresh NSE Money Feeds</button>
+            </div>
+
+            <div id="money-kpi-grid" class="grid-4 tabular" style="margin-bottom: 14px;"></div>
+
+            <div class="grid-2">
+              <div>
+                <h3 class="section-label">Top NSE Institutional Delivery Accumulation</h3>
+                <div class="table-wrap" style="max-height: 320px; overflow-y: auto;">
+                  <table class="data-table tabular">
+                    <thead>
+                      <tr>
+                        <th>Symbol</th>
+                        <th class="num">Delivery %</th>
+                        <th class="num">vs 15D Avg</th>
+                        <th class="num">Ticket Size</th>
+                        <th>Flow / Shield</th>
+                      </tr>
+                    </thead>
+                    <tbody id="money-deliv-body"></tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div>
+                <h3 class="section-label">Recent NSE Bulk &amp; Block Deals</h3>
+                <div class="table-wrap" style="max-height: 320px; overflow-y: auto;">
+                  <table class="data-table tabular">
+                    <thead>
+                      <tr>
+                        <th>Date</th>
+                        <th>Symbol</th>
+                        <th>Type</th>
+                        <th>Client</th>
+                        <th class="num">Value (₹ Cr)</th>
+                      </tr>
+                    </thead>
+                    <tbody id="money-deals-body"></tbody>
                   </table>
                 </div>
               </div>

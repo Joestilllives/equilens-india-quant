@@ -222,10 +222,11 @@ def compute_current_macro_regime(db: Database) -> dict[str, Any]:
         bench_above_200 = bool(closes[-1] >= sma200)
 
     if len(bench_bars) >= 65 and gold_map:
-        bdf_tmp = pd.DataFrame(bench_bars)[["date", "close"]].sort_values("date")
-        gs = pd.Series(gold_map, dtype=float).rename("gold")
-        bdf_tmp = bdf_tmp.merge(gs.rename_axis("date").reset_index(), on="date", how="left")
-        bdf_tmp["gold"] = bdf_tmp["gold"].ffill().bfill()
+        bdf_tmp = pd.DataFrame(bench_bars)[["date", "close"]].sort_values("date").reset_index(drop=True)
+        bdf_tmp["_dt"] = pd.to_datetime(bdf_tmp["date"])
+        g_df = pd.DataFrame({"_dt": pd.to_datetime(list(gold_map.keys())), "gold": list(gold_map.values())}).sort_values("_dt")
+        # Strictly causal US/global timezone guard: Gold close must be STRICTLY BEFORE NSE date T
+        bdf_tmp = pd.merge_asof(bdf_tmp, g_df, on="_dt", direction="backward", allow_exact_matches=False)
         ratio = bdf_tmp["gold"] / bdf_tmp["close"].replace(0, np.nan)
         chg = ratio.pct_change(63).dropna()
         if not chg.empty:
@@ -252,7 +253,7 @@ def compute_current_macro_regime(db: Database) -> dict[str, Any]:
     breadth_pct = round((above_50 / max(1, counted)) * 100.0, 1)
     hilo_sent_pct = round(((near_hi - near_lo) / max(1, counted)) * 100.0, 1)
 
-    # Exact V5 6-Gauge Stress Score
+    # Exact V5/V6 6-Gauge Stress Score
     stress_pts = 0
     if vix_now >= 19.0:
         stress_pts += 1
@@ -310,35 +311,59 @@ def _cs_zscore(series: pd.Series) -> pd.Series:
     return ((series - series.mean()) / std).clip(-3.0, 3.0)
 
 
+def _merge_causal_macro(
+    bdf: pd.DataFrame,
+    series_dict: dict[str, float],
+    col: str,
+    default_v: float,
+    strict_prior_day: bool,
+) -> pd.DataFrame:
+    """
+    Merge macro series causally onto NSE dates (NEVER backfills future dates!).
+    For US/global markets closing AFTER NSE 3:30 PM IST (S&P 500, Brent, Gold, USD/INR),
+    `strict_prior_day=True` enforces macro_date < nse_date via merge_asof(allow_exact_matches=False),
+    eliminating all cross-timezone lookahead bias cleanly across US & Indian holidays.
+    """
+    if not series_dict:
+        bdf[col] = default_v
+        return bdf
+    m_df = pd.DataFrame({"_dt": pd.to_datetime(list(series_dict.keys())), col: list(series_dict.values())}).sort_values("_dt")
+    merged = pd.merge_asof(
+        bdf,
+        m_df,
+        on="_dt",
+        direction="backward",
+        allow_exact_matches=not strict_prior_day,
+    )
+    merged[col] = merged[col].fillna(default_v)
+    return merged
+
+
 def _build_panel(
     db: Database,
     horizon: int = ML_HORIZON_DAYS,
     tb_horizon: int = TB_HORIZON_DAYS,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Build strictly causal V5 NSE institutional, behavioral sentiment & intermarket macro panel."""
+    """Build strictly causal V6 NSE institutional, behavioral sentiment & intermarket macro panel."""
     ohlcv_map = db.get_all_ohlcv()
     tickers_meta = {t["symbol"]: t["sector"] for t in db.get_tickers()}
     macro = db.get_macro_series()
 
     bench_bars = ohlcv_map.get(BENCHMARK_SYMBOL) or max(ohlcv_map.values(), key=len)
     bdf = pd.DataFrame(bench_bars)[["date", "close"]].sort_values("date").reset_index(drop=True)
+    bdf["_dt"] = pd.to_datetime(bdf["date"])
     bdf["bench_fwd_ret"] = bdf["close"].shift(-horizon) / bdf["close"] - 1.0
     bdf["bench_sma200"] = bdf["close"].rolling(200, min_periods=50).mean()
     bdf["bench_dist_200"] = (bdf["close"] / bdf["bench_sma200"]) - 1.0
 
-    for m_sym, col, default_v in [
-        (VOL_INDEX_SYMBOL, "vix_level", 15.0),
-        (FX_MACRO_SYMBOL, "usdinr", 85.0),
-        (BRENT_MACRO_SYMBOL, "brent", 75.0),
-        (SP500_MACRO_SYMBOL, "sp500", 5000.0),
+    # India VIX closes at 3:30 PM IST with NSE (same-day causal); US/Global series strictly lagged < nse_date!
+    for m_sym, col, default_v, strict_lag in [
+        (VOL_INDEX_SYMBOL, "vix_level", 15.0, False),
+        (FX_MACRO_SYMBOL, "usdinr", 85.0, True),
+        (BRENT_MACRO_SYMBOL, "brent", 75.0, True),
+        (SP500_MACRO_SYMBOL, "sp500", 5000.0, True),
     ]:
-        s_dict = macro.get(m_sym, {})
-        if s_dict:
-            s = pd.Series(s_dict, name=col, dtype=float)
-            bdf = bdf.merge(s.rename_axis("date").reset_index(), on="date", how="left")
-            bdf[col] = bdf[col].ffill().bfill().fillna(default_v)
-        else:
-            bdf[col] = default_v
+        bdf = _merge_causal_macro(bdf, macro.get(m_sym, {}), col, default_v, strict_prior_day=strict_lag)
 
     bdf["brent_ret_1d"] = bdf["brent"].pct_change().fillna(0.0).clip(-0.15, 0.15)
     bdf["usdinr_ret_1d"] = bdf["usdinr"].pct_change().fillna(0.0).clip(-0.05, 0.05)

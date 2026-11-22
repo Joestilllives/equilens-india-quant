@@ -243,6 +243,44 @@ class Database:
                     realized_pnl_inr REAL NOT NULL DEFAULT 0.0,
                     reason TEXT NOT NULL DEFAULT ''
                 );
+
+                CREATE TABLE IF NOT EXISTS nse_delivery (
+                    symbol TEXT NOT NULL,
+                    date TEXT NOT NULL,
+                    close_price REAL NOT NULL DEFAULT 0.0,
+                    traded_qty INTEGER NOT NULL DEFAULT 0,
+                    deliv_qty INTEGER NOT NULL DEFAULT 0,
+                    deliv_pct REAL NOT NULL DEFAULT 0.0,
+                    turnover_lacs REAL NOT NULL DEFAULT 0.0,
+                    no_of_trades INTEGER NOT NULL DEFAULT 0,
+                    avg_trade_val_inr REAL NOT NULL DEFAULT 0.0,
+                    PRIMARY KEY (symbol, date)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_nse_delivery_date ON nse_delivery(date DESC);
+
+                CREATE TABLE IF NOT EXISTS nse_fii_oi (
+                    date TEXT PRIMARY KEY,
+                    fii_idx_fut_long INTEGER NOT NULL DEFAULT 0,
+                    fii_idx_fut_short INTEGER NOT NULL DEFAULT 0,
+                    fii_idx_long_pct REAL NOT NULL DEFAULT 50.0,
+                    fii_net_idx_fut INTEGER NOT NULL DEFAULT 0,
+                    dii_net_idx_fut INTEGER NOT NULL DEFAULT 0,
+                    client_net_idx_fut INTEGER NOT NULL DEFAULT 0,
+                    fii_stk_fut_net INTEGER NOT NULL DEFAULT 0
+                );
+
+                CREATE TABLE IF NOT EXISTS nse_bulk_deals (
+                    id TEXT PRIMARY KEY,
+                    date TEXT NOT NULL,
+                    deal_type TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    client_name TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    quantity INTEGER NOT NULL DEFAULT 0,
+                    price REAL NOT NULL DEFAULT 0.0,
+                    value_cr REAL NOT NULL DEFAULT 0.0
+                );
                 """
             )
             # Safe schema migrations if upgrading from v1 DB
@@ -996,3 +1034,120 @@ class Database:
             conn.execute("DELETE FROM paper_account")
             conn.execute("DELETE FROM paper_positions")
             conn.execute("DELETE FROM paper_trades")
+
+    # ------------------------------------------------------------------
+    # Official NSE Institutional Money Signals (Delivery %, FII OI, Bulk/Block)
+    # ------------------------------------------------------------------
+    def upsert_nse_delivery(self, rows: list[dict[str, Any]]) -> None:
+        if not rows:
+            return
+        with self.connect() as conn:
+            conn.executemany(
+                """
+                INSERT OR REPLACE INTO nse_delivery (
+                    symbol, date, close_price, traded_qty, deliv_qty,
+                    deliv_pct, turnover_lacs, no_of_trades, avg_trade_val_inr
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        r["symbol"],
+                        r["date"],
+                        float(r.get("close_price", 0.0)),
+                        int(r.get("traded_qty", 0)),
+                        int(r.get("deliv_qty", 0)),
+                        float(r.get("deliv_pct", 0.0)),
+                        float(r.get("turnover_lacs", 0.0)),
+                        int(r.get("no_of_trades", 0)),
+                        float(r.get("avg_trade_val_inr", 0.0)),
+                    )
+                    for r in rows
+                ],
+            )
+
+    def get_nse_delivery_recent(self, days: int = 20) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            dates = [
+                r["date"]
+                for r in conn.execute(
+                    "SELECT DISTINCT date FROM nse_delivery ORDER BY date DESC LIMIT ?",
+                    (days,),
+                ).fetchall()
+            ]
+            if not dates:
+                return []
+            placeholders = ",".join("?" for _ in dates)
+            rows = conn.execute(
+                f"SELECT * FROM nse_delivery WHERE date IN ({placeholders}) ORDER BY date ASC",
+                dates,
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def upsert_nse_fii_oi(self, rows: list[dict[str, Any]]) -> None:
+        if not rows:
+            return
+        with self.connect() as conn:
+            conn.executemany(
+                """
+                INSERT OR REPLACE INTO nse_fii_oi (
+                    date, fii_idx_fut_long, fii_idx_fut_short, fii_idx_long_pct,
+                    fii_net_idx_fut, dii_net_idx_fut, client_net_idx_fut, fii_stk_fut_net
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        r["date"],
+                        int(r.get("fii_idx_fut_long", 0)),
+                        int(r.get("fii_idx_fut_short", 0)),
+                        float(r.get("fii_idx_long_pct", 50.0)),
+                        int(r.get("fii_net_idx_fut", 0)),
+                        int(r.get("dii_net_idx_fut", 0)),
+                        int(r.get("client_net_idx_fut", 0)),
+                        int(r.get("fii_stk_fut_net", 0)),
+                    )
+                    for r in rows
+                ],
+            )
+
+    def get_nse_fii_oi(self, limit: int = 30) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM nse_fii_oi ORDER BY date DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def replace_nse_bulk_deals(self, deals: list[dict[str, Any]]) -> None:
+        with self.connect() as conn:
+            conn.execute("DELETE FROM nse_bulk_deals")
+            if not deals:
+                return
+            conn.executemany(
+                """
+                INSERT OR REPLACE INTO nse_bulk_deals (
+                    id, date, deal_type, symbol, client_name, action, quantity, price, value_cr
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        d["id"],
+                        d["date"],
+                        d["deal_type"],
+                        d["symbol"],
+                        d["client_name"],
+                        d["action"],
+                        int(d.get("quantity", 0)),
+                        float(d.get("price", 0.0)),
+                        float(d.get("value_cr", 0.0)),
+                    )
+                    for d in deals
+                ],
+            )
+
+    def get_nse_bulk_deals(self, limit: int = 60) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM nse_bulk_deals ORDER BY value_cr DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+            return [dict(r) for r in rows]

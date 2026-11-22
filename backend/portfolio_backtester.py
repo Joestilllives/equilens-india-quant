@@ -253,7 +253,11 @@ def run_oos_portfolio_backtest(
     bench_sma200 = bench_series.rolling(200, min_periods=50).mean()
 
     if gold_map:
-        gold_s = pd.Series(gold_map, dtype=float).reindex(prices_df.index).ffill().bfill()
+        nse_dt_df = pd.DataFrame({"date": prices_df.index, "_dt": pd.to_datetime(prices_df.index)}).sort_values("_dt")
+        g_df = pd.DataFrame({"_dt": pd.to_datetime(list(gold_map.keys())), "gold": list(gold_map.values())}).sort_values("_dt")
+        # Strictly causal US/global timezone guard: Gold close must be STRICTLY BEFORE NSE date T
+        g_merged = pd.merge_asof(nse_dt_df, g_df, on="_dt", direction="backward", allow_exact_matches=False)
+        gold_s = pd.Series(g_merged["gold"].to_numpy(dtype=float), index=g_merged["date"])
         gold_nifty_chg = (gold_s / bench_series.replace(0, np.nan)).pct_change(63).fillna(0.0)
     else:
         gold_nifty_chg = pd.Series(0.0, index=prices_df.index)

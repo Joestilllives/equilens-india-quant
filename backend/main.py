@@ -21,6 +21,7 @@ from .execution_engine import commit_paper_rebalance, generate_rebalance_ticket,
 from .indicators import compute_indicator_frame, detect_chart_setups, serialize_indicator_series
 from .journal import get_journal_report, log_and_grade_journal
 from .ml_predictor import compute_current_macro_regime, train_and_predict_universe
+from .money_signals import get_money_signals_summary, sync_nse_money_signals
 from .sec_edgar import fetch_sec_form4_summary
 from .shortlister import build_shortlist, invalidate_shortlist_cache
 from .stress_tester import run_quantitative_stress_tests
@@ -63,6 +64,7 @@ class TicketRequest(BaseModel):
     top_k: int = 10
     risk_profile: str = "balanced"
     skip_earnings_blackout: bool = False
+    enforce_smart_money_shield: bool = True
     use_paper_holdings: bool = True
     current_holdings: list[HoldingInput] | None = None
 
@@ -72,6 +74,7 @@ class CommitPaperRequest(BaseModel):
     top_k: int = 10
     risk_profile: str = "balanced"
     skip_earnings_blackout: bool = False
+    enforce_smart_money_shield: bool = True
 
 
 @app.get("/api/health")
@@ -263,12 +266,18 @@ def sync_all_data() -> dict[str, Any]:
     existing = [t["symbol"] for t in db.get_tickers()]
     symbols = sorted(set(existing)) if len(existing) >= 30 else None
     sync_res = sync_universe(db, symbols=symbols)
+    try:
+        money_res = sync_nse_money_signals(db, lookback_days=15)
+    except Exception as exc:
+        logger.warning("NSE money signals sync skipped: %s", exc)
+        money_res = {}
     ml_res = train_and_predict_universe(db)
     _clear_all_caches()
     journal_res = log_and_grade_journal(db)
     alerts = run_alert_scan(db)
     return {
         "sync": sync_res,
+        "money_signals": money_res,
         "ml": ml_res["run"],
         "journal_logged": journal_res["summary"]["total_logged"],
         "alerts_generated": len(alerts),
@@ -339,6 +348,7 @@ def get_execution_ticket(
     top_k: int = Query(10, ge=4, le=20),
     risk_profile: str = Query("balanced"),
     skip_earnings_blackout: bool = Query(False),
+    enforce_smart_money_shield: bool = Query(True),
     use_paper_holdings: bool = Query(True),
 ) -> dict[str, Any]:
     try:
@@ -355,6 +365,7 @@ def get_execution_ticket(
             max_per_sector=2,
             risk_profile=risk_profile,
             skip_earnings_blackout=skip_earnings_blackout,
+            enforce_smart_money_shield=enforce_smart_money_shield,
             current_holdings=holdings,
         )
     except ValueError as exc:
@@ -381,6 +392,7 @@ def post_execution_ticket(req: TicketRequest) -> dict[str, Any]:
             max_per_sector=2,
             risk_profile=req.risk_profile,
             skip_earnings_blackout=req.skip_earnings_blackout,
+            enforce_smart_money_shield=req.enforce_smart_money_shield,
             current_holdings=holdings,
         )
     except ValueError as exc:
@@ -401,6 +413,7 @@ def paper_ledger_commit(req: CommitPaperRequest) -> dict[str, Any]:
             top_k=max(4, min(20, req.top_k)),
             risk_profile=req.risk_profile,
             skip_earnings_blackout=req.skip_earnings_blackout,
+            enforce_smart_money_shield=req.enforce_smart_money_shield,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -410,6 +423,17 @@ def paper_ledger_commit(req: CommitPaperRequest) -> dict[str, Any]:
 def paper_ledger_reset() -> dict[str, Any]:
     db.reset_paper_account()
     return {"reset": True, "ledger": get_paper_ledger_status(db)}
+
+
+@app.get("/api/money-signals")
+def money_signals() -> dict[str, Any]:
+    return get_money_signals_summary(db)
+
+
+@app.post("/api/money-signals/sync")
+def money_signals_sync() -> dict[str, Any]:
+    stats = sync_nse_money_signals(db, lookback_days=15)
+    return {"synced": stats, "data": get_money_signals_summary(db)}
 
 
 @app.get("/api/journal")

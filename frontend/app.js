@@ -952,12 +952,15 @@
     const risk = document.getElementById('ex-risk-profile').value || 'balanced';
     const topK = document.getElementById('ex-topk').value || '10';
     const skipBlackout = document.getElementById('ex-skip-blackout').checked;
+    const shieldEl = document.getElementById('ex-smart-shield');
+    const smartShield = shieldEl ? shieldEl.checked : true;
     const usePaper = document.getElementById('ex-use-paper').checked;
     const qs = new URLSearchParams({
       capital_inr: String(cap),
       top_k: String(topK),
       risk_profile: risk,
       skip_earnings_blackout: String(skipBlackout),
+      enforce_smart_money_shield: String(smartShield),
       use_paper_holdings: String(usePaper),
     });
     state.executionTicket = await apiFetch(`/api/execution/ticket?${qs}`);
@@ -973,7 +976,11 @@
     const t = state.executionTicket;
     if (!t) return;
     const s = t.summary;
-    document.getElementById('ex-asof-lbl').textContent = `As of ${t.as_of_date} · Top-${t.config.top_k} (Buffer Top-${t.config.rank_buffer}) · Max ${t.config.max_per_sector}/Sector`;
+    const skippedSm = t.skipped_smart_money || [];
+    const shieldNote = skippedSm.length
+      ? ` · Shield skipped ${skippedSm.map((x) => dispSym(x.symbol)).join(', ')}`
+      : '';
+    document.getElementById('ex-asof-lbl').textContent = `As of ${t.as_of_date} · Top-${t.config.top_k} (Buffer Top-${t.config.rank_buffer}) · Max ${t.config.max_per_sector}/Sector${shieldNote}`;
 
     document.getElementById('ex-kpi-grid').innerHTML = [
       ['Target Equity Exposure', `${s.actual_equity_pct.toFixed(1)}%`, `${fmtMoney(s.equity_inr)} · Gate ${s.gate_exposure_pct}% / VolCap ${s.vol_cap_exposure_pct}%`, 'text-up'],
@@ -991,7 +998,13 @@
     document.getElementById('ex-orders-body').innerHTML = t.orders.map((o) => {
       const deltaStr = o.delta_shares === 0 ? '0' : (o.delta_shares > 0 ? `+${o.delta_shares}` : `${o.delta_shares}`);
       const blackoutBadge = o.earnings_blackout
-        ? `<span class="badge badge-warn" style="margin-right:6px;">Results in ${o.days_to_earnings}D</span>`
+        ? `<span class="badge badge-warn" style="margin-right:5px;">Results in ${o.days_to_earnings}D</span>`
+        : '';
+      const delivBadge = (o.deliv_pct !== null && o.deliv_pct !== undefined)
+        ? `<span class="badge ${o.deliv_pct >= 52 ? 'badge-up' : (o.deliv_pct < 35 ? 'badge-warn' : 'badge-neutral')}" style="margin-right:5px;">Deliv ${Number(o.deliv_pct).toFixed(0)}%</span>`
+        : '';
+      const shieldBadge = (o.shield_status && o.shield_status !== 'Clean')
+        ? `<span class="badge badge-down" style="margin-right:5px;" title="${escHtml((o.shield_flags || []).join('; '))}">Shield: ${escHtml(o.shield_status)}</span>`
         : '';
       return `<tr>
         <td><span class="badge ${badgeFor(o.action)}">${escHtml(o.action)}</span></td>
@@ -1003,7 +1016,7 @@
         <td class="num"><strong>${o.target_shares}</strong> <span class="text-muted">(${deltaStr})</span></td>
         <td class="num">${o.order_value_inr > 0 ? fmtMoney(o.order_value_inr) : '--'}</td>
         <td class="num"><span class="text-up">${fmtPrice(o.target_price)}</span> / <span class="text-down">${fmtPrice(o.stop_price)}</span></td>
-        <td style="font-size:12px;">${blackoutBadge}${escHtml(o.reason)}</td>
+        <td style="font-size:12px;">${blackoutBadge}${delivBadge}${shieldBadge}${escHtml(o.reason)}</td>
       </tr>`;
     }).join('');
 
@@ -1014,6 +1027,57 @@
         await loadStockDetail(a.dataset.exSym);
       });
     });
+  }
+
+  async function loadMoneySignals() {
+    state.moneySignals = await apiFetch('/api/money-signals');
+    renderMoneySignals();
+  }
+
+  function renderMoneySignals() {
+    const ms = state.moneySignals;
+    const kpiEl = document.getElementById('money-kpi-grid');
+    const delEl = document.getElementById('money-deliv-body');
+    const dealEl = document.getElementById('money-deals-body');
+    if (!ms || !kpiEl) return;
+
+    const fii = ms.fii_positioning || {};
+    const fl = fii.latest;
+    const lr = ms.liquidity_ratios || {};
+    const fiiPctStr = fl ? `${Number(fl.fii_idx_long_pct).toFixed(1)}% Long` : '--';
+    const fiiSub = fl
+      ? `Net: ${Number(fl.fii_net_idx_fut).toLocaleString('en-IN')} cts` + (fii.fii_long_pct_5d_chg !== null ? ` (5D ${fmtPct(fii.fii_long_pct_5d_chg, 1)})` : '')
+      : 'Click Refresh NSE Money Feeds';
+    const diiSub = fl ? `DII Net: ${Number(fl.dii_net_idx_fut).toLocaleString('en-IN')} · Retail: ${Number(fl.client_net_idx_fut).toLocaleString('en-IN')}` : '--';
+
+    kpiEl.innerHTML = [
+      ['FII Index Futures', fiiPctStr, fiiSub, fii.tone === 'bullish' ? 'text-up' : (fii.tone === 'bearish' ? 'text-down' : '')],
+      ['DII vs Retail F&O', fl ? `${Number(fl.dii_net_idx_fut) >= 0 ? 'Net Long' : 'Net Short'}` : '--', diiSub, ''],
+      ['Midcap / NIFTY (3M)', lr.midcap_vs_nifty_63d_pct !== null ? fmtPct(lr.midcap_vs_nifty_63d_pct, 1) : '--', 'India domestic liquidity gauge', (lr.midcap_vs_nifty_63d_pct || 0) >= 0 ? 'text-up' : 'text-down'],
+      ['BankNIFTY / NIFTY (3M)', lr.bank_vs_nifty_63d_pct !== null ? fmtPct(lr.bank_vs_nifty_63d_pct, 1) : '--', 'India credit-cycle gauge', (lr.bank_vs_nifty_63d_pct || 0) >= 0 ? 'text-up' : 'text-down'],
+    ].map(([l, v, n, c]) => `<div class="kpi-card"><div class="kpi-label">${l}</div><div class="kpi-value ${c}">${v}</div><div class="kpi-note">${n}</div></div>`).join('');
+
+    const topDel = ms.top_accumulation || [];
+    delEl.innerHTML = topDel.length ? topDel.map((d) => `
+      <tr>
+        <td style="font-weight:700;">${escHtml(dispSym(d.symbol))}</td>
+        <td class="num ${d.deliv_pct >= 55 ? 'text-up' : ''}" style="font-weight:600;">${d.deliv_pct.toFixed(1)}%</td>
+        <td class="num ${d.deliv_surge_pct >= 0 ? 'text-up' : 'text-down'}">${fmtPct(d.deliv_surge_pct, 1)}</td>
+        <td class="num">${fmtMoney(d.avg_trade_val_inr)}</td>
+        <td><span class="badge ${d.tone === 'bullish' ? 'badge-up' : (d.tone === 'warning' ? 'badge-warn' : 'badge-neutral')}">${escHtml(d.tag)}</span></td>
+      </tr>
+    `).join('') : `<tr><td colspan="5" class="text-muted" style="text-align:center;">Click Refresh NSE Money Feeds to pull official NSE delivery data.</td></tr>`;
+
+    const deals = (ms.universe_bulk_deals && ms.universe_bulk_deals.length) ? ms.universe_bulk_deals : (ms.top_nse_deals || []);
+    dealEl.innerHTML = deals.length ? deals.map((d) => `
+      <tr>
+        <td class="text-muted">${escHtml(d.date)}</td>
+        <td style="font-weight:600;">${escHtml(dispSym(d.symbol))}</td>
+        <td><span class="badge ${d.action === 'BUY' ? 'badge-up' : 'badge-down'}">${escHtml(d.deal_type)} ${escHtml(d.action)}</span></td>
+        <td style="font-size:12px;">${escHtml(d.client_name.slice(0, 32))}</td>
+        <td class="num">₹${Number(d.value_cr).toFixed(1)} Cr</td>
+      </tr>
+    `).join('') : `<tr><td colspan="5" class="text-muted" style="text-align:center;">No recent NSE bulk/block deals synced yet.</td></tr>`;
   }
 
   function renderPaperLedger() {
@@ -1081,7 +1145,7 @@
       else requestAnimationFrame(drawStressEquityCanvas);
       loadSingleBacktest().catch(() => {});
     } else if (view === 'execution') {
-      Promise.all([loadExecutionTicket(), loadPaperLedger()]).catch((e) => showToast(e.message));
+      Promise.all([loadExecutionTicket(), loadPaperLedger(), loadMoneySignals()]).catch((e) => showToast(e.message));
     } else if (view === 'journal') {
       loadJournal().catch((e) => showToast(e.message));
     } else if (view === 'alerts') {
@@ -1223,7 +1287,7 @@
 
     // Execution & Paper-Trading Ledger bindings
     document.getElementById('btn-gen-ticket').addEventListener('click', () => loadExecutionTicket().catch((e) => showToast(e.message)));
-    ['ex-risk-profile', 'ex-topk', 'ex-skip-blackout', 'ex-use-paper'].forEach((id) => {
+    ['ex-risk-profile', 'ex-topk', 'ex-skip-blackout', 'ex-smart-shield', 'ex-use-paper'].forEach((id) => {
       const el = document.getElementById(id);
       if (el) el.addEventListener('change', () => loadExecutionTicket().catch((e) => showToast(e.message)));
     });
@@ -1231,6 +1295,7 @@
       const btn = document.getElementById('btn-commit-paper');
       btn.disabled = true; btn.textContent = 'Committing...';
       try {
+        const shieldEl = document.getElementById('ex-smart-shield');
         const res = await apiFetch('/api/execution/paper/commit', {
           method: 'POST',
           body: JSON.stringify({
@@ -1238,6 +1303,7 @@
             top_k: Number(document.getElementById('ex-topk').value) || 10,
             risk_profile: document.getElementById('ex-risk-profile').value || 'balanced',
             skip_earnings_blackout: document.getElementById('ex-skip-blackout').checked,
+            enforce_smart_money_shield: shieldEl ? shieldEl.checked : true,
           }),
         });
         state.paperLedger = res.ledger;
@@ -1257,6 +1323,23 @@
       await loadExecutionTicket();
       showToast('Paper-trading account reset.');
     });
+    const btnSyncMoney = document.getElementById('btn-sync-money');
+    if (btnSyncMoney) {
+      btnSyncMoney.addEventListener('click', async () => {
+        btnSyncMoney.disabled = true; btnSyncMoney.textContent = 'Syncing NSE...';
+        try {
+          const res = await apiFetch('/api/money-signals/sync', { method: 'POST' });
+          state.moneySignals = res.data;
+          renderMoneySignals();
+          await loadExecutionTicket();
+          showToast(`Synced ${res.synced.delivery_rows} NSE delivery rows & ${res.synced.fii_oi_days}D FII/DII OI.`);
+        } catch (err) {
+          showToast(err.message, 4500);
+        } finally {
+          btnSyncMoney.disabled = false; btnSyncMoney.textContent = 'Refresh NSE Money Feeds';
+        }
+      });
+    }
 
     document.getElementById('btn-log-journal').addEventListener('click', async () => {
       state.journalData = await apiFetch('/api/journal/log', { method: 'POST' });

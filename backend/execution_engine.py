@@ -79,6 +79,7 @@ def generate_rebalance_ticket(
     max_per_sector: int = 2,
     risk_profile: str = "balanced",
     skip_earnings_blackout: bool = False,
+    enforce_smart_money_shield: bool = True,
     current_holdings: list[dict[str, Any]] | None = None,
     cost_bps: float = DEFAULT_COST_BPS,
 ) -> dict[str, Any]:
@@ -95,6 +96,15 @@ def generate_rebalance_ticket(
     latest_date: str = mkt["latest_date"]
     latest_px: dict[str, float] = mkt["latest_px"]
 
+    try:
+        from .money_signals import evaluate_balance_sheet_shield, get_money_signals_summary
+
+        ms_snap = get_money_signals_summary(db)
+        deliv_map = ms_snap.get("stock_delivery_map", {})
+    except Exception:
+        deliv_map = {}
+        evaluate_balance_sheet_shield = None  # type: ignore[assignment]
+
     macro = compute_current_macro_regime(db)
     gate_exp = float(macro.get("target_exposure_pct", 100)) / 100.0
     vol_target = None if risk_profile.lower() == "growth" else 0.18
@@ -105,11 +115,37 @@ def generate_rebalance_ticket(
         if sym == BENCHMARK_SYMBOL or sym not in latest_px:
             continue
         dte, next_e_dt = _days_to_next_earnings(earnings_map.get(sym, []), latest_date)
+        t_meta = tickers.get(sym, {})
+        dm = deliv_map.get(sym)
+        if dm:
+            sh_status = dm["shield_status"]
+            sh_flags = list(dm["shield_flags"])
+            deliv_pct = dm["deliv_pct"]
+            deliv_surge = dm["deliv_surge_pct"]
+        else:
+            sh = (
+                evaluate_balance_sheet_shield(t_meta.get("fundamentals", {}), t_meta.get("sector", ""))
+                if evaluate_balance_sheet_shield
+                else {"status": "Clean", "flags": []}
+            )
+            sh_status = sh["status"]
+            sh_flags = list(sh["flags"])
+            deliv_pct = None
+            deliv_surge = None
+
+        spec_churn = deliv_pct is not None and deliv_pct < 35.0
+        shield_blocked = (sh_status == "Risk") or spec_churn
+        shield_block_reason = (
+            f"Balance-Sheet Risk ({', '.join(sh_flags)})"
+            if sh_status == "Risk"
+            else (f"Speculative Intraday Churn (Deliv {deliv_pct:.1f}% < 35%)" if spec_churn else "")
+        )
+
         ranked_rows.append(
             {
                 "symbol": sym,
-                "name": tickers.get(sym, {}).get("name", sym),
-                "sector": tickers.get(sym, {}).get("sector", "Other"),
+                "name": t_meta.get("name", sym),
+                "sector": t_meta.get("sector", "Other"),
                 "price": latest_px[sym],
                 "pred_alpha": float(p.get("pred_alpha_20d", 0.0)),
                 "prob_tb_win": float(p.get("prob_tb_win", 50.0)),
@@ -121,6 +157,8 @@ def generate_rebalance_ticket(
                 "days_to_earnings": dte,
                 "next_earnings_date": next_e_dt,
                 "earnings_blackout": dte is not None and 0 <= dte <= 7,
+                "shield_blocked": shield_blocked,
+                "shield_block_reason": shield_block_reason,
             }
         )
 
@@ -145,6 +183,7 @@ def generate_rebalance_ticket(
     chosen: list[str] = []
     sec_counts: dict[str, int] = {}
     skipped_blackout: list[dict[str, Any]] = []
+    skipped_smart_money: list[dict[str, Any]] = []
 
     def _can_add(sym: str) -> bool:
         sec = row_by_sym[sym]["sector"]
@@ -166,7 +205,7 @@ def generate_rebalance_ticket(
         if row_by_sym[sym]["rank"] <= rank_buffer and _can_add(sym):
             _add(sym)
 
-    # 2. Fill remaining slots with top V6 candidates respecting Max 2 per Sector & optional Earnings Blackout
+    # 2. Fill remaining slots with top V6 candidates respecting Max 2/Sector, Earnings Blackout & Smart-Money Shield
     for r in ranked_rows:
         if len(chosen) >= top_k:
             break
@@ -176,6 +215,11 @@ def generate_rebalance_ticket(
         if skip_earnings_blackout and r["earnings_blackout"] and sym not in held_map:
             skipped_blackout.append(
                 {"symbol": sym, "rank": r["rank"], "days_to_earnings": r["days_to_earnings"], "next_earnings_date": r["next_earnings_date"]}
+            )
+            continue
+        if enforce_smart_money_shield and r["shield_blocked"] and sym not in held_map:
+            skipped_smart_money.append(
+                {"symbol": sym, "rank": r["rank"], "reason": r["shield_block_reason"]}
             )
             continue
         _add(sym)
@@ -346,6 +390,39 @@ def generate_rebalance_ticket(
     act_order = {"SELL": 0, "BUY": 1, "ADD": 2, "TRIM": 3, "HOLD": 4}
     orders.sort(key=lambda o: (act_order.get(o["action"], 9), o["rank"] or 999))
 
+    # Enrich each order with live NSE Institutional Delivery % & Balance-Sheet Blowup Shield
+    try:
+        from .money_signals import evaluate_balance_sheet_shield, get_money_signals_summary
+
+        ms_snap = get_money_signals_summary(db)
+        deliv_map = ms_snap.get("stock_delivery_map", {})
+    except Exception:
+        deliv_map = {}
+        evaluate_balance_sheet_shield = None  # type: ignore[assignment]
+
+    for o in orders:
+        dm = deliv_map.get(o["symbol"])
+        if dm:
+            o["deliv_pct"] = dm["deliv_pct"]
+            o["deliv_surge_pct"] = dm["deliv_surge_pct"]
+            o["smart_money_tag"] = dm["tag"]
+            o["smart_money_tone"] = dm["tone"]
+            o["shield_status"] = dm["shield_status"]
+            o["shield_flags"] = dm["shield_flags"]
+        else:
+            t_meta = tickers.get(o["symbol"], {})
+            sh = (
+                evaluate_balance_sheet_shield(t_meta.get("fundamentals", {}), t_meta.get("sector", ""))
+                if evaluate_balance_sheet_shield
+                else {"status": "Clean", "flags": []}
+            )
+            o["deliv_pct"] = None
+            o["deliv_surge_pct"] = None
+            o["smart_money_tag"] = None
+            o["smart_money_tone"] = "neutral"
+            o["shield_status"] = sh["status"]
+            o["shield_flags"] = sh["flags"]
+
     cash_reserve_inr = max(0.0, capital_inr - allocated_equity_inr - est_total_fees)
     sector_breakdown = [
         {"sector": sec, "count": cnt, "weight_pct": round(sum(o["target_weight_pct"] for o in orders if o["sector"] == sec and o["target_shares"] > 0), 1)}
@@ -362,6 +439,7 @@ def generate_rebalance_ticket(
             "risk_profile": risk_profile.lower(),
             "vol_target_pct": round(vol_target * 100.0, 1) if vol_target else None,
             "skip_earnings_blackout": skip_earnings_blackout,
+            "enforce_smart_money_shield": enforce_smart_money_shield,
             "cost_bps": cost_bps,
         },
         "summary": {
@@ -386,6 +464,7 @@ def generate_rebalance_ticket(
         },
         "sector_breakdown": sector_breakdown,
         "skipped_blackout": skipped_blackout,
+        "skipped_smart_money": skipped_smart_money,
         "orders": orders,
     }
 
@@ -488,6 +567,7 @@ def commit_paper_rebalance(
     top_k: int = 10,
     risk_profile: str = "balanced",
     skip_earnings_blackout: bool = False,
+    enforce_smart_money_shield: bool = True,
 ) -> dict[str, Any]:
     """Execute and lock today's live V6 rebalance ticket into the SQLite forward-proof Paper Ledger."""
     existing_acct = db.get_paper_account()
@@ -524,6 +604,7 @@ def commit_paper_rebalance(
         max_per_sector=2,
         risk_profile=risk_profile,
         skip_earnings_blackout=skip_earnings_blackout,
+        enforce_smart_money_shield=enforce_smart_money_shield,
         current_holdings=cur_holdings,
     )
 

@@ -48,6 +48,38 @@ def test_zero_lookahead_leakage_canary() -> None:
         assert np.isclose(v1, v2, rtol=1e-9, atol=1e-9), f"Look-ahead leakage detected in {col}!"
 
 
+def test_zero_us_timezone_lookahead_canary() -> None:
+    """Mutating US/Global macro (S&P 500, Brent, Gold, USD/INR) on NSE date T must have ZERO effect on date T."""
+    import pandas as pd
+    from backend.ml_predictor import _merge_causal_macro
+
+    nse_dates = ["2025-01-01", "2025-01-02", "2025-01-03", "2025-01-06", "2025-01-07"]
+    bdf = pd.DataFrame({"date": nse_dates, "_dt": pd.to_datetime(nse_dates)})
+
+    # Global macro series starts on 2025-01-02 (so 2025-01-01 & 2025-01-02 must NOT bfill from future!)
+    macro_orig = {
+        "2025-01-02": 5800.0,
+        "2025-01-03": 5850.0,
+        "2025-01-06": 5900.0,
+        "2025-01-07": 5950.0,
+    }
+    macro_mut = dict(macro_orig)
+    macro_mut["2025-01-07"] = 99999.0  # Extreme shock on same-day US close (11h AFTER NSE closed!)
+
+    out_orig = _merge_causal_macro(bdf.copy(), macro_orig, "sp500", default_v=5000.0, strict_prior_day=True)
+    out_mut = _merge_causal_macro(bdf.copy(), macro_mut, "sp500", default_v=5000.0, strict_prior_day=True)
+
+    # 1. No bfill leakage on early dates before macro_date < nse_date exists
+    assert out_orig.loc[0, "sp500"] == 5000.0
+    assert out_orig.loc[1, "sp500"] == 5000.0
+    # 2. On 2025-01-03, strictly uses 2025-01-02 close (5800), NOT same-day 5850
+    assert out_orig.loc[2, "sp500"] == 5800.0
+    # 3. On 2025-01-07, strictly uses 2025-01-06 close (5900), 100% immune to same-day 99999.0 US shock
+    assert out_orig.loc[4, "sp500"] == 5900.0
+    assert out_mut.loc[4, "sp500"] == 5900.0
+    assert np.allclose(out_orig["sp500"].to_numpy(), out_mut["sp500"].to_numpy())
+
+
 def test_triple_barrier_exact_mechanics() -> None:
     n = 40
     closes = np.full(n, 1000.0)

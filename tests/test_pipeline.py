@@ -107,16 +107,25 @@ def test_fastapi_india_endpoints() -> None:
     assert r_bt.status_code == 200
     assert "equity_curve" in r_bt.json()
 
-    r_tk = client.get("/api/execution/ticket?capital_inr=1000000&top_k=10&risk_profile=balanced")
+    r_tk = client.get("/api/execution/ticket?capital_inr=1000000&top_k=10&risk_profile=balanced&enforce_smart_money_shield=true")
     assert r_tk.status_code == 200
     tk = r_tk.json()
     assert tk["summary"]["positions_count"] == 10
     assert tk["summary"]["distinct_sectors"] >= 5
     assert tk["summary"]["liquidbees_cash_inr"] >= 0
+    assert isinstance(tk["skipped_smart_money"], list)
+    assert tk["config"]["enforce_smart_money_shield"] is True
 
     r_ps = client.get("/api/execution/paper/status")
     assert r_ps.status_code == 200
     assert "initialized" in r_ps.json()
+
+    r_ms = client.get("/api/money-signals")
+    assert r_ms.status_code == 200
+    ms = r_ms.json()
+    assert "fii_positioning" in ms
+    assert "liquidity_ratios" in ms
+    assert len(ms["stock_delivery_map"]) >= 50
 
 
 def test_v6_execution_ticket_and_paper_ledger_lifecycle(tmp_path) -> None:
@@ -129,13 +138,34 @@ def test_v6_execution_ticket_and_paper_ledger_lifecycle(tmp_path) -> None:
     shutil.copyfile(DB_PATH, tmp_db_path)
     db = Database(tmp_db_path)
 
-    # 1. Verify Top-10 Balanced ticket enforces Max 2 per sector & >= 5 sectors
-    t_bal = generate_rebalance_ticket(db, capital_inr=1_000_000.0, top_k=10, max_per_sector=2, risk_profile="balanced")
+    # 1. Verify Top-10 Balanced ticket enforces Max 2 per sector, >= 5 sectors, and Smart-Money Shield
+    t_bal = generate_rebalance_ticket(
+        db,
+        capital_inr=1_000_000.0,
+        top_k=10,
+        max_per_sector=2,
+        risk_profile="balanced",
+        enforce_smart_money_shield=True,
+    )
     assert t_bal["summary"]["positions_count"] == 10
     assert t_bal["summary"]["distinct_sectors"] >= 5
+    assert isinstance(t_bal["skipped_smart_money"], list)
     for sb in t_bal["sector_breakdown"]:
         assert sb["count"] <= 2
     assert all(isinstance(o["target_shares"], int) and o["target_shares"] >= 0 for o in t_bal["orders"])
+    assert all(o.get("shield_status") != "Risk" for o in t_bal["orders"])
+    assert all(o.get("deliv_pct") is None or o["deliv_pct"] >= 35.0 for o in t_bal["orders"])
+
+    # Verify disabling the shield works cleanly too
+    t_unshielded = generate_rebalance_ticket(
+        db,
+        capital_inr=1_000_000.0,
+        top_k=10,
+        max_per_sector=2,
+        risk_profile="balanced",
+        enforce_smart_money_shield=False,
+    )
+    assert t_unshielded["skipped_smart_money"] == []
 
     # 2. Growth profile should deploy >= Balanced equity exposure
     t_gro = generate_rebalance_ticket(db, capital_inr=1_000_000.0, top_k=10, max_per_sector=2, risk_profile="growth")
