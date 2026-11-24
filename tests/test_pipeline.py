@@ -152,9 +152,26 @@ def test_v6_execution_ticket_and_paper_ledger_lifecycle(tmp_path) -> None:
     assert isinstance(t_bal["skipped_smart_money"], list)
     for sb in t_bal["sector_breakdown"]:
         assert sb["count"] <= 2
+        assert sb["weight_pct"] <= 20.1
     assert all(isinstance(o["target_shares"], int) and o["target_shares"] >= 0 for o in t_bal["orders"])
+    assert all(o["target_weight_pct"] <= 12.1 for o in t_bal["orders"])
     assert all(o.get("shield_status") != "Risk" for o in t_bal["orders"])
     assert all(o.get("deliv_pct") is None or o["deliv_pct"] >= 35.0 for o in t_bal["orders"])
+    assert t_bal["config"]["dd_brake_trigger_pct"] == -10.0
+    assert t_bal["config"]["goldbees_reserve_pct"] == 30.0
+    assert abs((t_bal["summary"]["liquidbees_alloc_inr"] + t_bal["summary"]["goldbees_alloc_inr"]) - t_bal["summary"]["liquidbees_cash_inr"]) <= 0.05
+
+    # Verify Top-20 ticket strictly enforces <=5% per stock and <=20% per sector
+    t_20 = generate_rebalance_ticket(
+        db,
+        capital_inr=1_000_000.0,
+        top_k=20,
+        risk_profile="balanced",
+        enforce_smart_money_shield=True,
+    )
+    assert t_20["summary"]["positions_count"] == 20
+    assert all(o["target_weight_pct"] <= 5.1 for o in t_20["orders"])
+    assert all(sb["weight_pct"] <= 20.1 for sb in t_20["sector_breakdown"])
 
     # Verify disabling the shield works cleanly too
     t_unshielded = generate_rebalance_ticket(

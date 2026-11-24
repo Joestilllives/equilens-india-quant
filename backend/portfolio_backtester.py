@@ -2,7 +2,7 @@
 Portfolio-level strictly out-of-sample Shortlist Backtester (Promoted V6 Institutional India Architecture):
   - 4-Tranche Staggered Overlapping 40-Day Sleeves (25% capital per sleeve, staggered 10 trading days apart
     to eliminate rebalance-date timing luck with zero extra turnover per rupee)
-  - Top-8 NSE Portfolio, 2xK Rank-Buffer Hysteresis, Max 2 per NSE Sector
+  - Top-10 NSE Portfolio, 2xK Rank-Buffer Hysteresis, Max 2 per NSE Sector, Hard <=12% Stock / <=20% Sector Caps
   - Correlation-Penalized Risk Weighting: w_i proportional to 1 / (vol_i * (1 + avg_pos_corr_i))
   - Ex-Ante 18% Annualized Portfolio Volatility Target (trailing 60D covariance)
     + Daily 6-Gauge India Sentiment & Intermarket Macro Risk Gate
@@ -17,10 +17,129 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from .config import BENCHMARK_SYMBOL, DEFAULT_COST_BPS, GOLD_MACRO_SYMBOL, VOL_INDEX_SYMBOL
+from .config import BENCHMARK_SYMBOL, DEFAULT_COST_BPS, FX_MACRO_SYMBOL, GOLD_MACRO_SYMBOL, VOL_INDEX_SYMBOL
 from .database import Database
 
 INDIA_CASH_DAILY_YIELD = (1.062 ** (1.0 / 252.0)) - 1.0
+DRAWDOWN_BRAKE_TRIGGER = -0.10
+GOLDBEES_RESERVE_SHARE = 0.30
+
+
+def apply_concentration_caps(
+    weights: dict[str, float],
+    sector_map: dict[str, str],
+    max_stock_w: float | None,
+    max_sector_w: float | None,
+    target_total: float,
+) -> dict[str, float]:
+    """Iteratively cap single-stock and sector weights, redistributing excess to uncapped positions."""
+    w = dict(weights)
+    if not w:
+        return w
+    for _ in range(15):
+        changed = False
+        if max_stock_w is not None:
+            for s in list(w.keys()):
+                if w[s] > max_stock_w + 1e-9:
+                    w[s] = max_stock_w
+                    changed = True
+        if max_sector_w is not None:
+            sec_totals: dict[str, float] = {}
+            for s, val in w.items():
+                sec = sector_map.get(s, "Other")
+                sec_totals[sec] = sec_totals.get(sec, 0.0) + val
+            for sec, stot in sec_totals.items():
+                if stot > max_sector_w + 1e-9:
+                    scale = max_sector_w / stot
+                    for s in list(w.keys()):
+                        if sector_map.get(s, "Other") == sec:
+                            w[s] *= scale
+                    changed = True
+        cur_sum = sum(w.values())
+        shortfall = target_total - cur_sum
+        if shortfall > 1e-6:
+            sec_totals = {}
+            for s, val in w.items():
+                sec = sector_map.get(s, "Other")
+                sec_totals[sec] = sec_totals.get(sec, 0.0) + val
+            eligible = [
+                s
+                for s, val in w.items()
+                if (max_stock_w is None or val < max_stock_w - 1e-6)
+                and (max_sector_w is None or sec_totals.get(sector_map.get(s, "Other"), 0.0) < max_sector_w - 1e-6)
+            ]
+            if eligible:
+                elig_sum = sum(w[s] for s in eligible)
+                if elig_sum > 1e-9:
+                    for s in eligible:
+                        w[s] += shortfall * (w[s] / elig_sum)
+                    changed = True
+        if not changed:
+            break
+    if max_stock_w is not None:
+        for s in list(w.keys()):
+            w[s] = min(w[s], max_stock_w)
+    if max_sector_w is not None:
+        sec_totals = {}
+        for s, val in w.items():
+            sec = sector_map.get(s, "Other")
+            sec_totals[sec] = sec_totals.get(sec, 0.0) + val
+        for sec, stot in sec_totals.items():
+            if stot > max_sector_w + 1e-9:
+                scale = max_sector_w / stot
+                for s in list(w.keys()):
+                    if sector_map.get(s, "Other") == sec:
+                        w[s] *= scale
+    return w
+
+
+def apply_drawdown_brake_and_gold_reserve(
+    base_rets: np.ndarray,
+    idle_weights: np.ndarray,
+    gold_inr_rets: np.ndarray,
+    dd_trigger: float = DRAWDOWN_BRAKE_TRIGGER,
+    gold_idle_share: float = GOLDBEES_RESERVE_SHARE,
+    cost_bps: float = DEFAULT_COST_BPS,
+) -> np.ndarray:
+    """Strictly causal -10% own-portfolio drawdown brake + 70% LiquidBees / 30% GOLDBEES defensive reserve."""
+    n = len(base_rets)
+    out = np.zeros(n, dtype=float)
+    eq_hist = np.ones(n + 1, dtype=float)
+    peak = 1.0
+    brake_on = False
+    cost_rate = cost_bps / 10000.0
+
+    for i in range(n):
+        idle_w = float(idle_weights[i]) if i < len(idle_weights) else 0.0
+        r_base = float(base_rets[i])
+        r_cash = INDIA_CASH_DAILY_YIELD
+        r_gold = float(gold_inr_rets[i]) if (i < len(gold_inr_rets) and np.isfinite(gold_inr_rets[i])) else r_cash
+
+        r_day = r_base + (idle_w * gold_idle_share) * (r_gold - r_cash)
+        if brake_on:
+            eq_w = max(0.0, 1.0 - idle_w)
+            r_eq_part = r_base - idle_w * r_cash
+            def_ret = (1.0 - gold_idle_share) * r_cash + gold_idle_share * r_gold
+            r_day = 0.5 * r_eq_part + (idle_w + 0.5 * eq_w) * def_ret
+
+        out[i] = r_day
+        eq_now = eq_hist[i] * (1.0 + r_day)
+        eq_hist[i + 1] = eq_now
+        peak = max(peak, eq_now)
+        dd_now = (eq_now / peak) - 1.0
+
+        if i >= 20:
+            sma20 = float(np.mean(eq_hist[i - 19 : i + 2]))
+            new_brake = brake_on
+            if not brake_on and dd_now <= dd_trigger:
+                new_brake = True
+            elif brake_on and eq_now > sma20 * 1.005 and dd_now > dd_trigger * 0.6:
+                new_brake = False
+            if new_brake != brake_on:
+                out[i] -= 0.35 * cost_rate
+                eq_hist[i + 1] = eq_hist[i] * (1.0 + out[i])
+            brake_on = new_brake
+    return out
 
 
 def _simulate_single_tranche(
@@ -46,6 +165,7 @@ def _simulate_single_tranche(
     max_per_sector: int,
     corr_penalized_weight: bool,
     vol_target: float | None,
+    out_idle_weights: list[float] | None = None,
 ) -> tuple[np.ndarray, float, int]:
     """Run one strictly causal overlapping sleeve starting at `rebal_offset`."""
     rebalance_set = set(oos_dates[rebal_offset::rebalance_days])
@@ -53,7 +173,7 @@ def _simulate_single_tranche(
     if oos_dates:
         rebalance_set.add(oos_dates[0])
 
-    rank_buffer = top_k * 2
+    rank_buffer = min(top_k * 3, 40)
     fee_rate = cost_bps / 10000.0
     current_weights: dict[str, float] = {}
     total_turnover = 0.0
@@ -64,6 +184,8 @@ def _simulate_single_tranche(
         if i > 0:
             prev_dt = sim_dates[i - 1]
             cash_w = max(0.0, 1.0 - sum(current_weights.values()))
+            if out_idle_weights is not None:
+                out_idle_weights.append(cash_w)
             day_ret = cash_w * INDIA_CASH_DAILY_YIELD
             for sym, w in current_weights.items():
                 p0 = float(prices_df.loc[prev_dt, sym])
@@ -71,6 +193,8 @@ def _simulate_single_tranche(
                 if p0 > 0 and np.isfinite(p0) and np.isfinite(p1):
                     day_ret += w * ((p1 / p0) - 1.0)
         else:
+            if out_idle_weights is not None:
+                out_idle_weights.append(1.0)
             day_ret = 0.0
 
         # Daily V5/V6 6-Gauge India Sentiment & Intermarket Macro Risk Gate
@@ -183,6 +307,10 @@ def _simulate_single_tranche(
                     rebal_exp = min(target_exposure, float(np.clip(vol_target / max(0.08, est_v), 0.25, 1.0)))
 
                 new_weights = {sym: float(w * rebal_exp) for sym, w in zip(chosen, raw_vec)}
+                if corr_penalized_weight and len(chosen) >= 8:
+                    max_stk_cap = 0.05 if top_k >= 20 else round(min(0.15, 1.20 / max(1, top_k)), 4)
+                    max_sec_cap = 0.25 if top_k < 10 else 0.20
+                    new_weights = apply_concentration_caps(new_weights, sector_map, max_stk_cap, max_sec_cap, rebal_exp)
             else:
                 new_weights = {}
 
@@ -252,15 +380,24 @@ def run_oos_portfolio_backtest(
     bench_series = prices_df[BENCHMARK_SYMBOL]
     bench_sma200 = bench_series.rolling(200, min_periods=50).mean()
 
+    fx_map = macro.get(FX_MACRO_SYMBOL, {})
     if gold_map:
         nse_dt_df = pd.DataFrame({"date": prices_df.index, "_dt": pd.to_datetime(prices_df.index)}).sort_values("_dt")
         g_df = pd.DataFrame({"_dt": pd.to_datetime(list(gold_map.keys())), "gold": list(gold_map.values())}).sort_values("_dt")
-        # Strictly causal US/global timezone guard: Gold close must be STRICTLY BEFORE NSE date T
+        # Strictly causal US/global timezone guard: Gold & FX closes must be STRICTLY BEFORE NSE date T
         g_merged = pd.merge_asof(nse_dt_df, g_df, on="_dt", direction="backward", allow_exact_matches=False)
-        gold_s = pd.Series(g_merged["gold"].to_numpy(dtype=float), index=g_merged["date"])
+        gold_s = pd.Series(g_merged["gold"].to_numpy(dtype=float), index=g_merged["date"]).ffill()
         gold_nifty_chg = (gold_s / bench_series.replace(0, np.nan)).pct_change(63).fillna(0.0)
+        if fx_map:
+            f_df = pd.DataFrame({"_dt": pd.to_datetime(list(fx_map.keys())), "fx": list(fx_map.values())}).sort_values("_dt")
+            f_merged = pd.merge_asof(nse_dt_df, f_df, on="_dt", direction="backward", allow_exact_matches=False)
+            fx_s = pd.Series(f_merged["fx"].to_numpy(dtype=float), index=f_merged["date"]).ffill().fillna(83.0)
+        else:
+            fx_s = pd.Series(83.0, index=prices_df.index)
+        gold_inr_ret_series = (gold_s * fx_s).pct_change().clip(-0.10, 0.10).fillna(0.0)
     else:
         gold_nifty_chg = pd.Series(0.0, index=prices_df.index)
+        gold_inr_ret_series = pd.Series(INDIA_CASH_DAILY_YIELD, index=prices_df.index)
 
     oos_df = pd.DataFrame(oos)
     oos_dates = sorted(set(oos_df["date"].unique()).intersection(set(prices_df.index)))
@@ -276,9 +413,11 @@ def run_oos_portfolio_backtest(
     offsets = sorted({(rebalance_days * t) // effective_tranches for t in range(effective_tranches)})
 
     tranche_rets: list[np.ndarray] = []
+    tranche_idles: list[np.ndarray] = []
     turn_list: list[float] = []
     rebal_counts: list[int] = []
     for off in offsets:
+        idle_buf: list[float] = []
         t_rets, t_turn, t_cnt = _simulate_single_tranche(
             sim_dates=sim_dates,
             oos_dates=oos_dates,
@@ -302,13 +441,26 @@ def run_oos_portfolio_backtest(
             max_per_sector=max_per_sector,
             corr_penalized_weight=inv_vol_weight,
             vol_target=vol_target,
+            out_idle_weights=idle_buf,
         )
         tranche_rets.append(t_rets)
+        tranche_idles.append(np.array(idle_buf, dtype=float))
         turn_list.append(t_turn)
         rebal_counts.append(t_cnt)
 
-    # Equal-weighted daily return across staggered overlapping tranches
+    # Equal-weighted daily return across staggered overlapping tranches + -10% Drawdown Brake & 70/30 LiquidBees/GOLDBEES Reserve
     blended_daily = np.mean(np.vstack(tranche_rets), axis=0)
+    if regime_gate:
+        blended_idle = np.mean(np.vstack(tranche_idles), axis=0)
+        gold_rets_sim = gold_inr_ret_series.reindex(sim_dates).fillna(INDIA_CASH_DAILY_YIELD).to_numpy(dtype=float)
+        blended_daily = apply_drawdown_brake_and_gold_reserve(
+            blended_daily,
+            blended_idle,
+            gold_rets_sim,
+            dd_trigger=DRAWDOWN_BRAKE_TRIGGER,
+            gold_idle_share=GOLDBEES_RESERVE_SHARE,
+            cost_bps=cost_bps,
+        )
 
     equity = float(initial_capital)
     bench_equity = float(initial_capital)

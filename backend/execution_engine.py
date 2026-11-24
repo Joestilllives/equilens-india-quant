@@ -179,15 +179,20 @@ def generate_rebalance_ticket(
                 "avg_cost": float(h.get("avg_cost") or latest_px[sym]),
             }
 
-    rank_buffer = top_k * 2
+    rank_buffer = min(top_k * 3, 40)
     chosen: list[str] = []
     sec_counts: dict[str, int] = {}
     skipped_blackout: list[dict[str, Any]] = []
     skipped_smart_money: list[dict[str, Any]] = []
 
+    # For Top-20 (<=5% per stock, <=20% per sector), allow up to 4 stocks per sector while hard-capping sector weight at 20%
+    effective_max_per_sec = max(max_per_sector, 4) if top_k >= 20 else (max(max_per_sector, 3) if top_k >= 15 else max_per_sector)
+    max_stock_w = 0.05 if top_k >= 20 else round(min(0.15, 1.20 / max(1, top_k)), 4)
+    max_sector_w = 0.25 if top_k < 10 else 0.20
+
     def _can_add(sym: str) -> bool:
         sec = row_by_sym[sym]["sector"]
-        return sec_counts.get(sec, 0) < max_per_sector
+        return sec_counts.get(sec, 0) < effective_max_per_sec
 
     def _add(sym: str) -> None:
         chosen.append(sym)
@@ -205,7 +210,7 @@ def generate_rebalance_ticket(
         if row_by_sym[sym]["rank"] <= rank_buffer and _can_add(sym):
             _add(sym)
 
-    # 2. Fill remaining slots with top V6 candidates respecting Max 2/Sector, Earnings Blackout & Smart-Money Shield
+    # 2. Fill remaining slots with top V6 candidates respecting Max/Sector, Earnings Blackout & Smart-Money Shield
     for r in ranked_rows:
         if len(chosen) >= top_k:
             break
@@ -260,7 +265,22 @@ def generate_rebalance_ticket(
     if vol_target is not None:
         vol_cap = float(np.clip(vol_target / max(0.08, ex_ante_vol_ann), 0.25, 1.0))
 
+    from .portfolio_backtester import DRAWDOWN_BRAKE_TRIGGER, GOLDBEES_RESERVE_SHARE, apply_concentration_caps
+
     final_equity_exp = min(gate_exp, vol_cap)
+    dd_brake_active = False
+    if current_holdings:
+        acct_chk = db.get_paper_account()
+        if acct_chk and float(acct_chk.get("initial_capital") or 0.0) > 0:
+            init_c = float(acct_chk["initial_capital"])
+            cur_dd = (capital_inr / init_c) - 1.0
+            if cur_dd <= DRAWDOWN_BRAKE_TRIGGER:
+                dd_brake_active = True
+                final_equity_exp *= 0.50
+
+    sector_lookup = {s: row_by_sym[s]["sector"] for s in chosen}
+    raw_port_weights = {s: float(unit_weights[i] * final_equity_exp) for i, s in enumerate(chosen)}
+    capped_port_weights = apply_concentration_caps(raw_port_weights, sector_lookup, max_stock_w, max_sector_w, final_equity_exp)
     fee_rate = cost_bps / 10000.0
 
     # 5. Build Actionable Trade Tickets (SELL exits first, then HOLD/BUY/TRIM target positions)
@@ -318,7 +338,7 @@ def generate_rebalance_ticket(
     for idx, sym in enumerate(chosen):
         r = row_by_sym[sym]
         px = r["price"]
-        w_port = float(unit_weights[idx] * final_equity_exp)
+        w_port = float(capped_port_weights.get(sym, unit_weights[idx] * final_equity_exp))
         target_val = capital_inr * w_port
         target_sh = max(0, int(floor(target_val / max(0.01, px))))
         actual_val = target_sh * px
@@ -424,6 +444,8 @@ def generate_rebalance_ticket(
             o["shield_flags"] = sh["flags"]
 
     cash_reserve_inr = max(0.0, capital_inr - allocated_equity_inr - est_total_fees)
+    goldbees_alloc_inr = cash_reserve_inr * GOLDBEES_RESERVE_SHARE
+    liquidbees_alloc_inr = cash_reserve_inr - goldbees_alloc_inr
     sector_breakdown = [
         {"sector": sec, "count": cnt, "weight_pct": round(sum(o["target_weight_pct"] for o in orders if o["sector"] == sec and o["target_shares"] > 0), 1)}
         for sec, cnt in sorted(sec_counts.items(), key=lambda kv: kv[1], reverse=True)
@@ -435,7 +457,11 @@ def generate_rebalance_ticket(
             "capital_inr": round(capital_inr, 2),
             "top_k": top_k,
             "rank_buffer": rank_buffer,
-            "max_per_sector": max_per_sector,
+            "max_per_sector": effective_max_per_sec,
+            "max_stock_weight_pct": round(max_stock_w * 100.0, 1),
+            "max_sector_weight_pct": round(max_sector_w * 100.0, 1),
+            "dd_brake_trigger_pct": round(DRAWDOWN_BRAKE_TRIGGER * 100.0, 1),
+            "goldbees_reserve_pct": round(GOLDBEES_RESERVE_SHARE * 100.0, 1),
             "risk_profile": risk_profile.lower(),
             "vol_target_pct": round(vol_target * 100.0, 1) if vol_target else None,
             "skip_earnings_blackout": skip_earnings_blackout,
@@ -445,6 +471,7 @@ def generate_rebalance_ticket(
         "summary": {
             "macro_regime": macro["regime"],
             "macro_tone": macro["tone"],
+            "dd_brake_active": dd_brake_active,
             "gate_exposure_pct": round(gate_exp * 100.0, 1),
             "vol_cap_exposure_pct": round(vol_cap * 100.0, 1),
             "target_equity_pct": round(final_equity_exp * 100.0, 1),
@@ -452,6 +479,8 @@ def generate_rebalance_ticket(
             "equity_inr": round(allocated_equity_inr, 2),
             "liquidbees_cash_inr": round(cash_reserve_inr, 2),
             "liquidbees_cash_pct": round((cash_reserve_inr / max(1.0, capital_inr)) * 100.0, 1),
+            "liquidbees_alloc_inr": round(liquidbees_alloc_inr, 2),
+            "goldbees_alloc_inr": round(goldbees_alloc_inr, 2),
             "ex_ante_vol_pct": round(ex_ante_vol_ann * 100.0, 1),
             "avg_pairwise_corr": round(portfolio_avg_corr, 2),
             "distinct_sectors": len(sec_counts),

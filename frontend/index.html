@@ -307,7 +307,7 @@
             <div class="panel-header">
               <div>
                 <h2 class="panel-title">5-Fold Embargoed Walk-Forward ML Validation (NSE)</h2>
-                <p class="panel-sub">27 cross-sectional, sector-neutral &amp; India macro features (India VIX, USD/INR, NSE Breadth) · Dual-head Triple-Barrier + 20D Alpha vs. NIFTY 50</p>
+                <p class="panel-sub">19 strictly causal cross-sectional, sector-neutral &amp; lagged macro features (India VIX, USD/INR, Brent, S&amp;P 500, NSE Breadth) · Dual-head Triple-Barrier + 40D Alpha vs. NIFTY 50</p>
               </div>
               <span id="ml-trained-lbl" class="text-muted" style="font-size:12px;"></span>
             </div>
@@ -331,8 +331,8 @@
                         <th>Test Window</th>
                         <th class="num">TB AUC</th>
                         <th class="num">IC</th>
-                        <th class="num">Top-5 20D</th>
-                        <th class="num">NIFTY 20D</th>
+                        <th class="num">Top-5 40D</th>
+                        <th class="num">NIFTY 40D</th>
                       </tr>
                     </thead>
                     <tbody id="ml-folds-body"></tbody>
@@ -348,14 +348,14 @@
           </div>
 
           <div class="panel">
-            <h3 class="section-label">Live NSE Triple-Barrier &amp; 20D Alpha Rankings</h3>
+            <h3 class="section-label">Live NSE Triple-Barrier &amp; 40D Alpha Rankings</h3>
             <div class="table-wrap">
               <table class="data-table tabular">
                 <thead>
                   <tr>
                     <th>NSE Symbol</th>
                     <th class="num">TB Win Prob</th>
-                    <th class="num">20D Alpha</th>
+                    <th class="num">40D Alpha</th>
                     <th class="num">Beat NIFTY %</th>
                     <th class="num">ATR Target</th>
                     <th class="num">ATR Stop</th>
@@ -521,9 +521,10 @@
                 </label>
                 <label class="text-muted" style="font-size:12px;">Target Stocks
                   <select id="ex-topk" class="select">
-                    <option value="8">Top 8</option>
-                    <option value="10" selected>Top 10 (V6 Optimal)</option>
-                    <option value="12">Top 12</option>
+                    <option value="8">Top 8 (&le;15% Stock / &le;25% Sec)</option>
+                    <option value="10" selected>Top 10 (V6 &le;12% Stock / &le;20% Sec)</option>
+                    <option value="12">Top 12 (&le;10% Stock / &le;20% Sec)</option>
+                    <option value="20">Top 20 (&le;5% Stock / &le;20% Sec)</option>
                   </select>
                 </label>
                 <label class="text-muted" style="font-size:12px; display:inline-flex; align-items:center; gap:6px;">
