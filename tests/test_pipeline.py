@@ -112,7 +112,7 @@ def test_fastapi_india_endpoints() -> None:
     tk = r_tk.json()
     assert tk["summary"]["positions_count"] == 10
     assert tk["summary"]["distinct_sectors"] >= 5
-    assert tk["summary"]["liquidbees_cash_inr"] >= 0
+    assert tk["summary"]["liquidcase_cash_inr"] >= 0
     assert isinstance(tk["skipped_smart_money"], list)
     assert tk["config"]["enforce_smart_money_shield"] is True
 
@@ -159,7 +159,7 @@ def test_v6_execution_ticket_and_paper_ledger_lifecycle(tmp_path) -> None:
     assert all(o.get("deliv_pct") is None or o["deliv_pct"] >= 35.0 for o in t_bal["orders"])
     assert t_bal["config"]["dd_brake_trigger_pct"] == -10.0
     assert t_bal["config"]["goldbees_reserve_pct"] == 30.0
-    assert abs((t_bal["summary"]["liquidbees_alloc_inr"] + t_bal["summary"]["goldbees_alloc_inr"]) - t_bal["summary"]["liquidbees_cash_inr"]) <= 0.05
+    assert abs((t_bal["summary"]["liquidcase_alloc_inr"] + t_bal["summary"]["goldbees_alloc_inr"]) - t_bal["summary"]["liquidcase_cash_inr"]) <= 0.05
 
     # Verify Top-20 ticket strictly enforces <=5% per stock and <=20% per sector
     t_20 = generate_rebalance_ticket(

@@ -9,7 +9,7 @@ Turns the V6 algorithm into an exact, zero-guesswork Indian execution workflow:
     Live 6-Gauge India Sentiment & Intermarket Macro Risk Gate,
     and Ex-Ante 18% Annualized Portfolio Volatility Target ('balanced') or Uncapped ('growth').
   - Flags Earnings Blackouts (new buys reporting quarterly results within <= 5 trading days).
-  - Computes exact integer NSE shares, rupee allocations, LiquidBees cash reserve,
+  - Computes exact integer NSE shares, rupee allocations, LIQUIDCASE (70%) / GOLDBEES (30%) cash reserve,
     +/-2.0xATR target/stop prices, Indian STT+brokerage (15 bps), and est. 20% STCG tax.
   - Persists timestamped paper rebalances in SQLite for zero-survivorship-bias forward proof vs. NIFTY 50.
 """
@@ -27,7 +27,7 @@ from .config import BENCHMARK_SYMBOL, DEFAULT_COST_BPS
 from .database import Database
 from .ml_predictor import compute_current_macro_regime
 
-INDIA_LIQUIDBEES_ANNUAL_YIELD = 0.062
+INDIA_LIQUIDCASE_ANNUAL_YIELD = 0.062
 INDIA_STCG_TAX_RATE = 0.20
 
 
@@ -445,7 +445,7 @@ def generate_rebalance_ticket(
 
     cash_reserve_inr = max(0.0, capital_inr - allocated_equity_inr - est_total_fees)
     goldbees_alloc_inr = cash_reserve_inr * GOLDBEES_RESERVE_SHARE
-    liquidbees_alloc_inr = cash_reserve_inr - goldbees_alloc_inr
+    liquidcase_alloc_inr = cash_reserve_inr - goldbees_alloc_inr
     sector_breakdown = [
         {"sector": sec, "count": cnt, "weight_pct": round(sum(o["target_weight_pct"] for o in orders if o["sector"] == sec and o["target_shares"] > 0), 1)}
         for sec, cnt in sorted(sec_counts.items(), key=lambda kv: kv[1], reverse=True)
@@ -477,9 +477,9 @@ def generate_rebalance_ticket(
             "target_equity_pct": round(final_equity_exp * 100.0, 1),
             "actual_equity_pct": round((allocated_equity_inr / max(1.0, capital_inr)) * 100.0, 1),
             "equity_inr": round(allocated_equity_inr, 2),
-            "liquidbees_cash_inr": round(cash_reserve_inr, 2),
-            "liquidbees_cash_pct": round((cash_reserve_inr / max(1.0, capital_inr)) * 100.0, 1),
-            "liquidbees_alloc_inr": round(liquidbees_alloc_inr, 2),
+            "liquidcase_cash_inr": round(cash_reserve_inr, 2),
+            "liquidcase_cash_pct": round((cash_reserve_inr / max(1.0, capital_inr)) * 100.0, 1),
+            "liquidcase_alloc_inr": round(liquidcase_alloc_inr, 2),
             "goldbees_alloc_inr": round(goldbees_alloc_inr, 2),
             "ex_ante_vol_pct": round(ex_ante_vol_ann * 100.0, 1),
             "avg_pairwise_corr": round(portfolio_avg_corr, 2),
@@ -510,14 +510,14 @@ def get_paper_ledger_status(db: Database) -> dict[str, Any]:
     positions = db.get_paper_positions()
     trades = db.get_paper_trades(limit=100)
 
-    # Accrue Indian LiquidBees ~6.2% p.a. yield on cash since last rebalance date
+    # Accrue Indian LIQUIDCASE ~6.2% p.a. yield on cash since last rebalance date
     try:
         d_last = datetime.fromisoformat(acct["last_rebalance_at"].replace("Z", "+00:00")).date()
         d_now = datetime.strptime(latest_date[:10], "%Y-%m-%d").date()
         days_held = max(0, (d_now - d_last).days)
     except Exception:
         days_held = 0
-    accrued_cash_interest = float(acct["cash_inr"]) * ((1.0 + INDIA_LIQUIDBEES_ANNUAL_YIELD) ** (days_held / 365.0) - 1.0)
+    accrued_cash_interest = float(acct["cash_inr"]) * ((1.0 + INDIA_LIQUIDCASE_ANNUAL_YIELD) ** (days_held / 365.0) - 1.0)
     cash_now = float(acct["cash_inr"]) + accrued_cash_interest
 
     marked_positions: list[dict[str, Any]] = []
@@ -573,7 +573,7 @@ def get_paper_ledger_status(db: Database) -> dict[str, Any]:
             "initial_capital_inr": round(init_cap, 2),
             "total_nav_inr": round(total_nav, 2),
             "equity_value_inr": round(equity_val, 2),
-            "cash_liquidbees_inr": round(cash_now, 2),
+            "cash_liquidcase_inr": round(cash_now, 2),
             "accrued_cash_interest_inr": round(accrued_cash_interest, 2),
             "equity_weight_pct": round((equity_val / max(1.0, total_nav)) * 100.0, 1),
             "total_return_inr": round(total_return_inr, 2),
@@ -691,7 +691,7 @@ def commit_paper_rebalance(
         "started_at": started_at,
         "last_rebalance_at": now_iso,
         "initial_capital": initial_cap,
-        "cash_inr": float(ticket["summary"]["liquidbees_cash_inr"]),
+        "cash_inr": float(ticket["summary"]["liquidcase_cash_inr"]),
         "realized_pnl_inr": prev_realized + float(ticket["summary"]["est_realized_pnl_inr"]),
         "total_fees_inr": prev_fees + float(ticket["summary"]["est_total_fees_inr"]),
         "est_stcg_tax_inr": prev_tax + float(ticket["summary"]["est_stcg_tax_inr"]),

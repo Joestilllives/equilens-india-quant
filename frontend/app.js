@@ -986,11 +986,11 @@
     const brakeNote = s.dd_brake_active ? ' · ⚠️ -10% DD BRAKE ACTIVE (0.5x Risk)' : '';
     document.getElementById('ex-asof-lbl').textContent = `As of ${t.as_of_date} · Top-${t.config.top_k} (Buffer Top-${t.config.rank_buffer}) · Max ${t.config.max_per_sector}/Sector${capNote}${shieldNote}${brakeNote}`;
 
-    const lbAmt = s.liquidbees_alloc_inr !== undefined ? s.liquidbees_alloc_inr : s.liquidbees_cash_inr * 0.7;
-    const gbAmt = s.goldbees_alloc_inr !== undefined ? s.goldbees_alloc_inr : s.liquidbees_cash_inr * 0.3;
+    const lcAmt = s.liquidcase_alloc_inr !== undefined ? s.liquidcase_alloc_inr : s.liquidcase_cash_inr * 0.7;
+    const gbAmt = s.goldbees_alloc_inr !== undefined ? s.goldbees_alloc_inr : s.liquidcase_cash_inr * 0.3;
     document.getElementById('ex-kpi-grid').innerHTML = [
       ['Target Equity Exposure', `${s.actual_equity_pct.toFixed(1)}%`, `${fmtMoney(s.equity_inr)} · Gate ${s.gate_exposure_pct}% / VolCap ${s.vol_cap_exposure_pct}%`, s.dd_brake_active ? 'text-warn' : 'text-up'],
-      ['Defensive Reserve (70/30)', fmtMoney(s.liquidbees_cash_inr), `70% LiquidBees ${fmtMoney(lbAmt)} · 30% GOLDBEES ${fmtMoney(gbAmt)}`, ''],
+      ['Defensive Reserve (70/30)', fmtMoney(s.liquidcase_cash_inr), `70% LIQUIDCASE ${fmtMoney(lcAmt)} · 30% GOLDBEES ${fmtMoney(gbAmt)}`, ''],
       ['Risk & Diversification', `${s.ex_ante_vol_pct.toFixed(1)}% Vol`, `${s.distinct_sectors} sectors · Avg Pairwise Corr ${s.avg_pairwise_corr.toFixed(2)}`, ''],
       ['Est. Indian STT & Tax', fmtMoney(s.est_total_fees_inr), `Est. 20% STCG: ${fmtMoney(s.est_stcg_tax_inr)} · ${s.trades_count} orders`, s.blackout_warnings > 0 ? 'text-warn' : ''],
     ].map(([l, v, n, c]) => `<div class="kpi-card"><div class="kpi-label">${l}</div><div class="kpi-value ${c}">${v}</div><div class="kpi-note">${n}</div></div>`).join('');
@@ -1103,7 +1103,7 @@
     kpiEl.innerHTML = [
       ['Paper Account NAV', fmtMoney(a.total_nav_inr), `Initial: ${fmtMoney(a.initial_capital_inr)} (${a.risk_profile.toUpperCase()} · Top-${a.top_k})`, ''],
       ['Forward Return vs NIFTY', fmtPct(a.total_return_pct), `NIFTY: ${fmtPct(a.nifty_return_pct)} · Excess: ${fmtPct(a.excess_vs_nifty_pct)}`, a.total_return_pct >= 0 ? 'text-up' : 'text-down'],
-      ['LiquidBees Cash', fmtMoney(a.cash_liquidbees_inr), `Equity: ${a.equity_weight_pct}% · Cash Yield: +${fmtMoney(a.accrued_cash_interest_inr)}`, ''],
+      ['LIQUIDCASE Cash', fmtMoney(a.cash_liquidcase_inr), `Equity: ${a.equity_weight_pct}% · Cash Yield: +${fmtMoney(a.accrued_cash_interest_inr)}`, ''],
       ['Realized / Fees / STCG', fmtMoney(a.realized_pnl_inr), `STT+Fees: ${fmtMoney(a.total_fees_inr)} · Est. 20% STCG: ${fmtMoney(a.est_stcg_tax_inr)}`, ''],
     ].map(([l, v, n, c]) => `<div class="kpi-card"><div class="kpi-label">${l}</div><div class="kpi-value ${c}">${v}</div><div class="kpi-note">${n}</div></div>`).join('');
 
@@ -1116,7 +1116,7 @@
         <td class="num">${fmtMoney(pos.market_value_inr)}</td>
         <td class="num ${pos.unrealized_pnl_inr >= 0 ? 'text-up' : 'text-down'}">${fmtPct(pos.unrealized_pnl_pct)}</td>
       </tr>
-    `).join('') : `<tr><td colspan="6" class="text-muted" style="text-align:center;">100% LiquidBees cash.</td></tr>`;
+    `).join('') : `<tr><td colspan="6" class="text-muted" style="text-align:center;">100% LIQUIDCASE cash.</td></tr>`;
 
     trEl.innerHTML = p.trades.length ? p.trades.map((tr) => `
       <tr>

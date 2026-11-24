@@ -22,10 +22,10 @@ EquiLens India Quant is a full-stack Indian stock market (**NSE / NIFTY 50 / INR
 - **Top-10 NSE Portfolio (`Max 2 per NSE Sector`, ≥ 5 sectors)** with `2×K` (`Top-20`) rank-buffer hysteresis to minimize Indian STT & 20% STCG tax churn.
 - **4-Tranche Staggered Overlapping 40D Sleeves**: Splits capital into 4 equal 25% sleeves staggered 10 trading days apart, eliminating rebalance-date calendar luck with zero extra turnover per rupee.
 - **Correlation-Penalized Risk Weighting**: `w_i ∝ 1 / (vol_i × (1 + avg_pos_corr_i))` over trailing 126D pairwise correlations.
-- **6-Gauge India Sentiment & Macro Risk Gate + Ex-Ante `18%` Volatility Target**: Dynamically scales equity exposure (`100% / 85% / 55% / 25%`) based on India VIX, NIFTY 50 vs. 200-DMA, NSE Breadth, NSE 52W Hi-Lo Fear Sentiment, Gold/NIFTY 3M flight-to-safety ratio, and trailing 60D portfolio covariance. Idle cash earns ~6.2% p.a. Indian LiquidBees yield.
+- **6-Gauge India Sentiment & Macro Risk Gate + Ex-Ante `18%` Volatility Target**: Dynamically scales equity exposure (`100% / 85% / 55% / 25%`) based on India VIX, NIFTY 50 vs. 200-DMA, NSE Breadth, NSE 52W Hi-Lo Fear Sentiment, Gold/NIFTY 3M flight-to-safety ratio, and trailing 60D portfolio covariance. Idle cash uses a 70% `LIQUIDCASE` (Growth Liquid ETF, ~6.2% p.a. yield) / 30% `GOLDBEES` defensive reserve split.
 
 ### 4. Live Execution Ticket, Earnings Blackout Guard & Paper-Trading Ledger (`backend/execution_engine.py`)
-- Generates exact integer NSE share quantities, rupee allocations (`₹`), LiquidBees cash reserve, `±2.0×ATR` target/stop prices, Earnings Blackout flags (`≤ 5` trading days to quarterly results), and Indian 15 bps STT + 20% STCG tax estimates.
+- Generates exact integer NSE share quantities, rupee allocations (`₹`), `LIQUIDCASE` (70%) / `GOLDBEES` (30%) cash reserve, `±2.0×ATR` target/stop prices, Earnings Blackout flags (`≤ 5` trading days to quarterly results), and Indian 15 bps STT + 20% STCG tax estimates.
 - **SQLite Forward-Proof Paper Ledger**: Locks timestamped live NSE fills in `data/equilens_india.db` and marks daily P&L forward against **NIFTY 50** (zero survivorship bias).
 
 ---
