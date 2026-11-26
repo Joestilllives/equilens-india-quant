@@ -302,8 +302,36 @@ class Database:
                     goldbees_inr REAL NOT NULL,
                     peak_nav_inr REAL NOT NULL,
                     dd_pct REAL NOT NULL DEFAULT 0.0,
-                    dd_brake_active INTEGER NOT NULL DEFAULT 0
+                    dd_brake_active INTEGER NOT NULL DEFAULT 0,
+                    bench_tri_price REAL
                 );
+
+                CREATE TABLE IF NOT EXISTS paper_sleeves (
+                    sleeve_id INTEGER PRIMARY KEY,
+                    last_rebalance_date TEXT,
+                    next_rebalance_date TEXT,
+                    status TEXT NOT NULL DEFAULT 'scheduled',
+                    target_weight_pct REAL NOT NULL DEFAULT 25.0
+                );
+
+                CREATE TABLE IF NOT EXISTS pit_fundamentals_history (
+                    symbol TEXT NOT NULL,
+                    as_of_date TEXT NOT NULL,
+                    filing_date TEXT,
+                    trailing_pe REAL,
+                    ev_to_ebitda REAL,
+                    fcf_yield REAL,
+                    gross_profit_to_assets REAL,
+                    accruals REAL,
+                    roe REAL,
+                    debt_to_equity REAL,
+                    market_cap_cr REAL,
+                    source TEXT NOT NULL DEFAULT 'snapshot',
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (symbol, as_of_date)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_pit_fund_date ON pit_fundamentals_history (as_of_date DESC, symbol);
                 """
             )
             # Safe schema migrations if upgrading from v1 DB
@@ -319,9 +347,11 @@ class Database:
             self._ensure_column(conn, "paper_account", "dd_brake_active", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column(conn, "paper_account", "liquidcase_inr", "REAL")
             self._ensure_column(conn, "paper_account", "goldbees_inr", "REAL NOT NULL DEFAULT 0.0")
+            self._ensure_column(conn, "paper_account", "bench_tri_entry_price", "REAL")
             self._ensure_column(conn, "paper_account", "est_ltcg_tax_inr", "REAL NOT NULL DEFAULT 0.0")
             self._ensure_column(conn, "paper_account", "stcl_carry_inr", "REAL NOT NULL DEFAULT 0.0")
             self._ensure_column(conn, "paper_account", "ltcl_carry_inr", "REAL NOT NULL DEFAULT 0.0")
+            self._ensure_column(conn, "paper_nav_history", "bench_tri_price", "REAL")
 
     @staticmethod
     def _ensure_column(conn: sqlite3.Connection, table: str, col: str, definition: str) -> None:
@@ -1014,6 +1044,7 @@ class Database:
         positions: list[dict[str, Any]],
         new_trades: list[dict[str, Any]],
         lots: list[dict[str, Any]] | None = None,
+        sleeves: list[dict[str, Any]] | None = None,
     ) -> None:
         with self.connect() as conn:
             conn.execute(
@@ -1023,8 +1054,8 @@ class Database:
                     realized_pnl_inr, total_fees_inr, est_stcg_tax_inr,
                     bench_entry_price, risk_profile, top_k,
                     peak_nav_inr, dd_brake_active, liquidcase_inr, goldbees_inr,
-                    est_ltcg_tax_inr, stcl_carry_inr, ltcl_carry_inr
-                ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    bench_tri_entry_price, est_ltcg_tax_inr, stcl_carry_inr, ltcl_carry_inr
+                ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     account["started_at"],
@@ -1041,6 +1072,7 @@ class Database:
                     1 if account.get("dd_brake_active") else 0,
                     float(account.get("liquidcase_inr", account["cash_inr"])),
                     float(account.get("goldbees_inr", 0.0)),
+                    account.get("bench_tri_entry_price"),
                     float(account.get("est_ltcg_tax_inr", 0.0)),
                     float(account.get("stcl_carry_inr", 0.0)),
                     float(account.get("ltcl_carry_inr", 0.0)),
@@ -1112,10 +1144,31 @@ class Database:
                             for l in lots
                         ],
                     )
+            if sleeves is not None:
+                for sl in sleeves:
+                    conn.execute(
+                        """
+                        INSERT OR REPLACE INTO paper_sleeves (
+                            sleeve_id, last_rebalance_date, next_rebalance_date, status, target_weight_pct
+                        ) VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (
+                            int(sl["sleeve_id"]),
+                            sl.get("last_rebalance_date"),
+                            sl.get("next_rebalance_date"),
+                            str(sl.get("status", "scheduled")),
+                            float(sl.get("target_weight_pct", 25.0)),
+                        ),
+                    )
 
     def get_paper_lots(self) -> list[dict[str, Any]]:
         with self.connect() as conn:
             rows = conn.execute("SELECT * FROM paper_lots ORDER BY buy_date ASC, id ASC").fetchall()
+        return [dict(r) for r in rows]
+
+    def get_paper_sleeves(self) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute("SELECT * FROM paper_sleeves ORDER BY sleeve_id ASC").fetchall()
         return [dict(r) for r in rows]
 
     def record_paper_nav(self, snap: dict[str, Any]) -> None:
@@ -1124,8 +1177,8 @@ class Database:
                 """
                 INSERT OR REPLACE INTO paper_nav_history (
                     date, nav_inr, equity_inr, liquidcase_inr, goldbees_inr,
-                    peak_nav_inr, dd_pct, dd_brake_active
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    peak_nav_inr, dd_pct, dd_brake_active, bench_tri_price
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     snap["date"],
@@ -1136,6 +1189,7 @@ class Database:
                     float(snap["peak_nav_inr"]),
                     float(snap.get("dd_pct", 0.0)),
                     1 if snap.get("dd_brake_active") else 0,
+                    snap.get("bench_tri_price"),
                 ),
             )
 
@@ -1160,6 +1214,7 @@ class Database:
             conn.execute("DELETE FROM paper_positions")
             conn.execute("DELETE FROM paper_trades")
             conn.execute("DELETE FROM paper_lots")
+            conn.execute("DELETE FROM paper_sleeves")
             conn.execute("DELETE FROM paper_nav_history")
 
     # ------------------------------------------------------------------
@@ -1278,3 +1333,79 @@ class Database:
                 (limit,),
             ).fetchall()
             return [dict(r) for r in rows]
+
+    def get_nse_delivery_history(self) -> dict[str, dict[str, float]]:
+        """Return {symbol: {date: deliv_pct}} across all stored NSE delivery rows."""
+        out: dict[str, dict[str, float]] = {}
+        with self.connect() as conn:
+            rows = conn.execute("SELECT symbol, date, deliv_pct FROM nse_delivery ORDER BY date ASC").fetchall()
+        for r in rows:
+            sym = str(r["symbol"]).upper()
+            out.setdefault(sym, {})[str(r["date"])[:10]] = float(r["deliv_pct"])
+        return out
+
+    # ------------------------------------------------------------------
+    # Phase 2: Strictly Immutable Point-In-Time (PIT) Fundamentals Store
+    # ------------------------------------------------------------------
+    def insert_pit_fundamentals_snapshots(self, rows: list[dict[str, Any]]) -> int:
+        """
+        Insert immutable PIT fundamental snapshots using INSERT OR IGNORE on (symbol, as_of_date).
+        Existing historical snapshots are NEVER overwritten (zero restatement lookahead).
+        """
+        if not rows:
+            return 0
+        with self.connect() as conn:
+            before = conn.total_changes
+            conn.executemany(
+                """
+                INSERT OR IGNORE INTO pit_fundamentals_history (
+                    symbol, as_of_date, filing_date, trailing_pe, ev_to_ebitda,
+                    fcf_yield, gross_profit_to_assets, accruals, roe,
+                    debt_to_equity, market_cap_cr, source, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        str(r["symbol"]).upper(),
+                        str(r["as_of_date"])[:10],
+                        str(r["filing_date"])[:10] if r.get("filing_date") else None,
+                        r.get("trailing_pe"),
+                        r.get("ev_to_ebitda"),
+                        r.get("fcf_yield"),
+                        r.get("gross_profit_to_assets"),
+                        r.get("accruals"),
+                        r.get("roe"),
+                        r.get("debt_to_equity"),
+                        r.get("market_cap_cr"),
+                        str(r.get("source", "snapshot")),
+                        str(r["created_at"]),
+                    )
+                    for r in rows
+                ],
+            )
+            return int(conn.total_changes - before)
+
+    def get_pit_fundamentals_as_of(self, as_of_date: str) -> dict[str, dict[str, Any]]:
+        """Return latest strictly causal PIT fundamental snapshot per symbol with as_of_date <= query date."""
+        cutoff = str(as_of_date)[:10]
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT p.*
+                FROM pit_fundamentals_history p
+                INNER JOIN (
+                    SELECT symbol, MAX(as_of_date) AS max_dt
+                    FROM pit_fundamentals_history
+                    WHERE as_of_date <= ?
+                    GROUP BY symbol
+                ) latest
+                ON p.symbol = latest.symbol AND p.as_of_date = latest.max_dt
+                """,
+                (cutoff,),
+            ).fetchall()
+        return {str(r["symbol"]).upper(): dict(r) for r in rows}
+
+    def get_pit_fundamentals_count(self) -> int:
+        with self.connect() as conn:
+            row = conn.execute("SELECT COUNT(*) AS cnt FROM pit_fundamentals_history").fetchone()
+        return int(row["cnt"]) if row else 0

@@ -1,15 +1,18 @@
 """
-EquiLens India v5 Walk-Forward Quantitative ML Engine (Promoted V5 Sentiment & Macro Architecture):
-  - 19 Strictly Causal NSE Institutional, Behavioral Sentiment & Intermarket Macro Features:
-      * Official NSE 6M+12M Skip-1M Volatility-Adjusted Momentum & Frog-in-the-Pan (FIP) Smoothness
-      * 52W High Proximity, 1Y & Downside Volatility, Sector-Relative Alpha
-      * Stock-Specific Rolling Macro Sensitivities (Beta x 63D Trend for Brent Crude, USD/INR, S&P 500)
-      * Behavioral MAX Retail-Lottery Hype Avoidance (Bali, Cakici & Whitelaw JFE 2011)
-      * Overnight Institutional Gap Sentiment (Lou, Polk & Skouras JFE 2019)
-      * India VIX, NIFTY 50 vs 200-DMA & NSE Breadth
-  - 50% NSE Multi-Factor Prior + 50% Regularized 40D Cross-Sectional Rank-Target ML
-    (Ridge + shallow HistGradientBoosting), evaluated across 5 expanding chronological folds
-    with a strict 40-day embargo gap (zero look-ahead leakage).
+EquiLens India V7 Walk-Forward Quantitative ML Engine (Canonical Finance & Economics Architecture):
+  - Strictly Causal Canonical NSE Signals (Zero Lookahead):
+      * Blitz, Huij & Martens (2011) CAPM Residual Momentum (12-1M & 6-1M)
+      * Novy-Marx (2012) Intermediate-Horizon Momentum (12-7M)
+      * Grinblatt & Han (2005) Capital Gains Overhang (CGO 126D via turnover-weighted VWAP)
+      * Frazzini & Pedersen (2014) Betting Against Beta (-Vasicek shrunk 252D beta)
+      * Daniel & Moskowitz (2016) Bear-Rebound Momentum Crash Damper (NIFTY 252D < 0 & VIX >= 19)
+      * Pollet & Wilson (2010) Cross-Stock Average Pairwise Correlation (63D telemetry)
+      * Proven V6 survivors: FIP Smoothness, 1Y & Downside Vol, Sector-Neutral 3M Alpha,
+        MAX Retail-Lottery Avoidance, Overnight Institutional Sentiment, FX/S&P 500 Macro Tailwinds
+  - 50% Canonical Multi-Factor Prior + 50% Walk-Forward 40D Vasicek Residual-Sharpe ML
+    (Ridge on strictly cross-sectional features + shallow HistGradientBoosting with macro interactions),
+    evaluated across 5 expanding chronological folds with strict 40-day embargo.
+  - Strict Non-Equity Hygiene: ^NSEI, NIFTYBEES.NS, and GOLDBEES.NS are excluded everywhere.
   - Triple-Barrier Payoff Classifier + ATR Target/Stop + 60D Probability Cones.
 """
 
@@ -45,7 +48,8 @@ from .config import (
 from .database import Database
 from .indicators import compute_indicator_frame
 
-FEATURE_COLS: list[str] = [
+# Legacy V6 19-feature list retained for clean side-by-side V6 vs V7 ablations
+V6_FEATURE_COLS: list[str] = [
     "z_mom_6m1m_voladj",
     "z_mom_12m1m_voladj",
     "z_fip_smooth_6m",
@@ -67,7 +71,37 @@ FEATURE_COLS: list[str] = [
     "z_overnight_sent_63d",
 ]
 
+# V7 Canonical Book Feature Set (prunes collinear/zero-signal noise: z_sec_rel_126d,
+# z_vol_ratio_5_20, z_macro_tailwind_brent; adds CAPM Residual Mom, 12-7M, CGO, -Vasicek Beta)
+FEATURE_COLS: list[str] = [
+    "z_resid_12m1m",
+    "z_resid_6m1m",
+    "z_mom_12_7",
+    "z_cgo_126",
+    "z_neg_beta",
+    "z_mom_6m1m_voladj",
+    "z_mom_12m1m_voladj",
+    "z_fip_smooth_6m",
+    "z_vol_252d",
+    "z_down_vol_126d",
+    "z_sec_rel_63d",
+    "z_ret_21d",
+    "z_rsi14",
+    "vix_level",
+    "bench_dist_200",
+    "nse_breadth_50d",
+    "z_macro_tailwind_fx",
+    "z_macro_tailwind_sp500",
+    "z_max_ret_21d",
+    "z_overnight_sent_63d",
+]
+
 FEATURE_LABELS: dict[str, str] = {
+    "z_resid_12m1m": "CAPM Residual Momentum (12-1M)",
+    "z_resid_6m1m": "CAPM Residual Momentum (6-1M)",
+    "z_mom_12_7": "Intermediate Momentum (12-7M)",
+    "z_cgo_126": "Capital Gains Overhang (126D)",
+    "z_neg_beta": "Betting Against Beta (-Vasicek β)",
     "z_mom_6m1m_voladj": "NSE 6-1M Vol-Adj Momentum",
     "z_mom_12m1m_voladj": "NSE 12-1M Vol-Adj Momentum",
     "z_fip_smooth_6m": "Frog-in-the-Pan Smoothness",
@@ -88,6 +122,9 @@ FEATURE_LABELS: dict[str, str] = {
     "z_max_ret_21d": "Retail Lottery Spike (MAX 21D)",
     "z_overnight_sent_63d": "Overnight Institutional Sentiment",
 }
+
+_DATE_MACRO_COLS = {"vix_level", "bench_dist_200", "nse_breadth_50d"}
+CS_FEATURE_INDICES: list[int] = [i for i, c in enumerate(FEATURE_COLS) if c not in _DATE_MACRO_COLS]
 
 _MACRO_LOCK = threading.Lock()
 _MACRO_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
@@ -188,8 +225,40 @@ def build_probability_cone(
     return cone
 
 
+def compute_pollet_wilson_avg_corr(
+    ohlcv_map: dict[str, list[dict[str, Any]]],
+    window: int = 63,
+    as_of_date: str | None = None,
+) -> float:
+    """
+    Strictly causal Pollet & Wilson (2010) cross-stock average pairwise correlation over trailing `window` days.
+    Used strictly as a forward volatility/risk telemetry gauge (NOT a panic-to-cash trigger).
+    """
+    series_dict: dict[str, pd.Series] = {}
+    for sym, bars in ohlcv_map.items():
+        if sym in NON_EQUITY_SYMBOLS or len(bars) < max(30, window + 5):
+            continue
+        s = pd.Series({str(b["date"])[:10]: float(b["close"]) for b in bars}).sort_index()
+        if as_of_date is not None:
+            s = s[s.index <= as_of_date]
+        if len(s) >= max(30, window + 2):
+            series_dict[sym] = s.tail(window + 2)
+    if len(series_dict) < 5:
+        return 0.25
+    px = pd.DataFrame(series_dict).sort_index()
+    rets = px.pct_change().tail(window)
+    # Retain columns with sufficient non-null observations and non-zero variance
+    valid_cols = [c for c in rets.columns if rets[c].notna().sum() >= max(20, window // 2) and float(rets[c].std() or 0.0) > 1e-8]
+    if len(valid_cols) < 5:
+        return 0.25
+    cmat = rets[valid_cols].corr().to_numpy(dtype=float, copy=True)
+    np.fill_diagonal(cmat, np.nan)
+    val = float(np.nanmean(cmat))
+    return round(val, 4) if np.isfinite(val) else 0.25
+
+
 def compute_current_macro_regime(db: Database) -> dict[str, Any]:
-    """Compute live V5 6-Gauge Indian Sentiment & Intermarket Macro regime snapshot."""
+    """Compute live 6-Gauge Indian Sentiment & Intermarket Macro regime snapshot + V7 telemetry."""
     cache_key = str(db.db_path.resolve())
     now = time.monotonic()
     with _MACRO_LOCK:
@@ -215,12 +284,15 @@ def compute_current_macro_regime(db: Database) -> dict[str, Any]:
 
     bench_dist_200 = 0.0
     bench_above_200 = True
+    bench_ret_252d_pct = 0.0
     gold_nifty_63d_pct = 0.0
     if len(bench_bars) >= 200:
         closes = np.array([b["close"] for b in bench_bars], dtype=float)
         sma200 = float(np.mean(closes[-200:]))
         bench_dist_200 = ((closes[-1] / sma200) - 1.0) * 100.0
         bench_above_200 = bool(closes[-1] >= sma200)
+        if len(closes) >= 253 and closes[-253] > 0:
+            bench_ret_252d_pct = ((closes[-1] / closes[-253]) - 1.0) * 100.0
 
     if len(bench_bars) >= 65 and gold_map:
         bdf_tmp = pd.DataFrame(bench_bars)[["date", "close"]].sort_values("date").reset_index(drop=True)
@@ -254,7 +326,11 @@ def compute_current_macro_regime(db: Database) -> dict[str, Any]:
     breadth_pct = round((above_50 / max(1, counted)) * 100.0, 1)
     hilo_sent_pct = round(((near_hi - near_lo) / max(1, counted)) * 100.0, 1)
 
-    # Exact V5/V6 6-Gauge Stress Score
+    # Pollet & Wilson (2010) 63D Cross-Stock Average Correlation telemetry (NOT a panic-to-cash trigger)
+    avg_corr_63 = compute_pollet_wilson_avg_corr(ohlcv_map, window=63)
+    dm_crash_damper_active = bool(bench_ret_252d_pct < 0.0 and vix_now >= 19.0)
+
+    # Exact V6/V7 6-Gauge Stress Score (preserved unchanged)
     stress_pts = 0
     if vix_now >= 19.0:
         stress_pts += 1
@@ -295,7 +371,11 @@ def compute_current_macro_regime(db: Database) -> dict[str, Any]:
         "gold_nifty_63d_pct": round(gold_nifty_63d_pct, 1),
         "hilo_sentiment_pct": hilo_sent_pct,
         "bench_dist_sma200_pct": round(float(bench_dist_200), 2),
+        "bench_ret_252d_pct": round(float(bench_ret_252d_pct), 2),
         "breadth_50d_pct": breadth_pct,
+        "avg_corr_63": avg_corr_63,
+        "avg_corr_elevated": bool(avg_corr_63 >= 0.313),
+        "dm_crash_damper_active": dm_crash_damper_active,
         "stress_score": stress_pts,
         "target_exposure_pct": target_exp_pct,
         "universe_size": counted,
@@ -344,8 +424,11 @@ def _build_panel(
     db: Database,
     horizon: int = ML_HORIZON_DAYS,
     tb_horizon: int = TB_HORIZON_DAYS,
+    model_version: str = "v7",
+    prior_variant: str = "book",
+    enable_dm_damper: bool = True,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Build strictly causal V6 NSE institutional, behavioral sentiment & intermarket macro panel."""
+    """Build strictly causal NSE canonical factor & ML panel (supports v7 and v6 for ablations)."""
     ohlcv_map = db.get_all_ohlcv()
     tickers_meta = {t["symbol"]: t["sector"] for t in db.get_tickers()}
     macro = db.get_macro_series()
@@ -353,6 +436,8 @@ def _build_panel(
     bench_bars = ohlcv_map.get(BENCHMARK_SYMBOL) or max(ohlcv_map.values(), key=len)
     bdf = pd.DataFrame(bench_bars)[["date", "close"]].sort_values("date").reset_index(drop=True)
     bdf["_dt"] = pd.to_datetime(bdf["date"])
+    bdf["bench_ret_1d"] = bdf["close"].pct_change().fillna(0.0).clip(-0.15, 0.15)
+    bdf["bench_ret_252d"] = (bdf["close"] / bdf["close"].shift(252) - 1.0).fillna(0.0)
     bdf["bench_fwd_ret"] = bdf["close"].shift(-horizon) / bdf["close"] - 1.0
     bdf["bench_sma200"] = bdf["close"].rolling(200, min_periods=50).mean()
     bdf["bench_dist_200"] = (bdf["close"] / bdf["bench_sma200"]) - 1.0
@@ -376,6 +461,8 @@ def _build_panel(
     macro_lookup = bdf[
         [
             "date",
+            "bench_ret_1d",
+            "bench_ret_252d",
             "bench_fwd_ret",
             "vix_level",
             "bench_dist_200",
@@ -397,13 +484,42 @@ def _build_panel(
 
         close = df["close"].astype(float)
         open_p = df["open"].astype(float).replace(0, np.nan).fillna(close)
+        vol_sh = df["volume"].astype(float).clip(lower=0.0)
         ret_1d = close.pct_change().fillna(0.0).clip(-0.25, 0.25)
         log_ret = np.log(close / close.shift(1))
+        bench_r = df["bench_ret_1d"].fillna(0.0)
 
         df["symbol"] = sym
         df["sector"] = tickers_meta.get(sym, "Unknown")
         df["vol_252d"] = log_ret.rolling(252, min_periods=63).std() * np.sqrt(252)
         vol_safe = df["vol_252d"].fillna(df["vol_20d"]).fillna(0.25).clip(lower=0.12)
+        df["vol_safe"] = vol_safe
+
+        # 1. Frazzini & Pedersen (2014) Vasicek-Shrunk Rolling Beta (strictly causal 252D)
+        bench_var_252 = bench_r.rolling(252, min_periods=63).var().replace(0, np.nan)
+        beta_raw = (ret_1d.rolling(252, min_periods=63).cov(bench_r) / bench_var_252).clip(-0.5, 3.0).fillna(1.0)
+        df["beta_vasicek"] = (0.60 * beta_raw + 0.40 * 1.0).clip(0.10, 2.50)
+        df["neg_beta"] = -df["beta_vasicek"]
+
+        # 2. Blitz, Huij & Martens (2011) CAPM Residual Momentum (12-1M & 6-1M, strictly causal)
+        # Uses lagged causal beta_{t-1} so day-t residual depends only on prices <= t.
+        eps_1d = ret_1d - df["beta_vasicek"].shift(1).fillna(1.0) * bench_r
+        idio_vol_252 = (eps_1d.rolling(252, min_periods=63).std() * np.sqrt(252.0)).fillna(vol_safe).clip(lower=0.10)
+        idio_vol_126 = (eps_1d.rolling(126, min_periods=40).std() * np.sqrt(252.0)).fillna(vol_safe).clip(lower=0.10)
+        resid_12m1m_sum = eps_1d.shift(21).rolling(231, min_periods=120).sum()
+        resid_6m1m_sum = eps_1d.shift(21).rolling(105, min_periods=60).sum()
+        df["resid_12m1m"] = resid_12m1m_sum.fillna(eps_1d.rolling(126, min_periods=40).sum()).fillna(0.0) / idio_vol_252
+        df["resid_6m1m"] = resid_6m1m_sum.fillna(eps_1d.rolling(63, min_periods=20).sum()).fillna(0.0) / idio_vol_126
+
+        # 3. Novy-Marx (2012) Intermediate-Horizon Momentum (12-7M, vol-adjusted)
+        ret_12_7 = close.shift(126) / close.shift(252).replace(0, np.nan) - 1.0
+        df["mom_12_7"] = ret_12_7.fillna(df["ret_126d"]).fillna(0.0) / vol_safe
+
+        # 4. Grinblatt & Han (2005) Capital Gains Overhang (126D turnover-weighted VWAP)
+        pv_126 = (close * vol_sh).rolling(126, min_periods=40).sum()
+        v_126 = vol_sh.rolling(126, min_periods=40).sum().replace(0, np.nan)
+        vwap_126 = (pv_126 / v_126).fillna(close.rolling(126, min_periods=40).mean())
+        df["cgo_126"] = ((close - vwap_126) / close.replace(0, np.nan)).clip(-1.5, 0.9).fillna(0.0)
 
         # NSE Normalized Skip-1M Momentum (6M-1M and 12M-1M divided by 1Y volatility)
         ret_12m_1m = close.shift(21) / close.shift(252) - 1.0
@@ -421,15 +537,15 @@ def _build_panel(
         df["down_vol_126d"] = log_ret.clip(upper=0.0).rolling(126, min_periods=40).std() * np.sqrt(252)
         df["above_sma50"] = (close > df["sma50"]).astype(float)
 
-        # V5 Behavioral Sentiment 1: MAX Retail-Lottery Hype Avoidance (Bali et al. JFE 2011)
+        # Behavioral Sentiment 1: MAX Retail-Lottery Hype Avoidance (Bali et al. JFE 2011)
         df["max_ret_21d"] = ret_1d.rolling(21, min_periods=10).max().fillna(0.0)
 
-        # V5 Behavioral Sentiment 2: Overnight Institutional Gap Sentiment (Lou, Polk & Skouras JFE 2019)
+        # Behavioral Sentiment 2: Overnight Institutional Gap Sentiment (Lou, Polk & Skouras JFE 2019)
         prev_c = close.shift(1).replace(0, np.nan)
         overnight_r = ((open_p / prev_c) - 1.0).fillna(0.0).clip(-0.12, 0.12)
         df["overnight_sent_63d"] = overnight_r.rolling(63, min_periods=20).sum().fillna(0.0)
 
-        # V5 Stock-Specific Rolling Macro Betas x 63D Global Macro Trend (strictly causal)
+        # Stock-Specific Rolling Macro Betas x 63D Global Macro Trend (strictly causal)
         brent_r = df["brent_ret_1d"].fillna(0.0)
         fx_r = df["usdinr_ret_1d"].fillna(0.0)
         sp_r = df["sp500_ret_1d"].fillna(0.0)
@@ -468,48 +584,91 @@ def _build_panel(
     full["sec_rel_63d"] = (full["ret_63d"] - full.groupby(["date", "sector"])["ret_63d"].transform("median")).fillna(0.0)
     full["sec_rel_126d"] = (full["ret_126d"] - full.groupby(["date", "sector"])["ret_126d"].transform("median")).fillna(0.0)
 
-    # Daily cross-sectional z-scores across the NSE universe
-    for col in [
+    # Daily cross-sectional z-scores across the clean NSE equity universe (vectorized, exact ddof=0)
+    z_cols = [
+        "resid_12m1m", "resid_6m1m", "mom_12_7", "cgo_126", "neg_beta",
         "mom_6m1m_voladj", "mom_12m1m_voladj", "fip_smooth_6m", "prox_52w_high",
         "vol_252d", "down_vol_126d", "sec_rel_63d", "sec_rel_126d",
         "ret_21d", "rsi14", "vol_ratio_5_20",
         "macro_tailwind_brent", "macro_tailwind_fx", "macro_tailwind_sp500",
         "max_ret_21d", "overnight_sent_63d",
-    ]:
-        full[f"z_{col}"] = full.groupby("date")[col].transform(_cs_zscore).fillna(0.0)
+    ]
+    g_date = full.groupby("date", sort=False)
+    for col in z_cols:
+        mu = g_date[col].transform("mean")
+        sd = g_date[col].transform("std", ddof=0)
+        full[f"z_{col}"] = ((full[col] - mu) / sd.where(sd >= 1e-9)).clip(-3.0, 3.0).fillna(0.0)
 
-    # Official-style NSE Institutional Multi-Factor Prior (zero overfitting)
-    nse_mom = 0.5 * full["z_mom_6m1m_voladj"] + 0.5 * full["z_mom_12m1m_voladj"]
-    nse_lowvol = -0.6 * full["z_vol_252d"] - 0.4 * full["z_down_vol_126d"]
-    full["nse_factor_prior"] = (
-        0.42 * nse_mom
-        + 0.25 * nse_lowvol
-        + 0.18 * full["z_fip_smooth_6m"]
-        + 0.15 * full["z_prox_52w_high"]
-    )
+    # Multi-Factor Prior selection
+    if model_version == "v6" or prior_variant == "v6":
+        nse_mom = 0.5 * full["z_mom_6m1m_voladj"] + 0.5 * full["z_mom_12m1m_voladj"]
+        nse_lowvol = -0.6 * full["z_vol_252d"] - 0.4 * full["z_down_vol_126d"]
+        base_prior = (
+            0.42 * nse_mom
+            + 0.25 * nse_lowvol
+            + 0.18 * full["z_fip_smooth_6m"]
+            + 0.15 * full["z_prox_52w_high"]
+        )
+    elif prior_variant == "book_fip":
+        # 2017-2021 hardened variant retaining 10% FIP smoothness & 25% Low-Risk (Vol + BAB)
+        base_prior = (
+            0.22 * full["z_resid_12m1m"]
+            + 0.20 * full["z_mom_12_7"]
+            + 0.13 * full["z_resid_6m1m"]
+            + 0.10 * full["z_cgo_126"]
+            + 0.10 * full["z_fip_smooth_6m"]
+            + 0.125 * full["z_neg_beta"]
+            - 0.125 * full["z_vol_252d"]
+        )
+    else:
+        # Canonical V7 Book Prior (zero ML params)
+        base_prior = (
+            0.25 * full["z_resid_12m1m"]
+            + 0.25 * full["z_mom_12_7"]
+            + 0.15 * full["z_resid_6m1m"]
+            + 0.15 * full["z_cgo_126"]
+            + 0.10 * full["z_neg_beta"]
+            - 0.10 * full["z_vol_252d"]
+        )
+
+    # Daniel & Moskowitz (2016) Bear-Rebound Momentum Crash Damper
+    if model_version != "v6" and enable_dm_damper:
+        dm_zone = (full["bench_ret_252d"] < 0.0) & (full["vix_level"] >= 19.0)
+        dm_defensive = (
+            0.40 * full["z_neg_beta"]
+            - 0.35 * full["z_vol_252d"]
+            + 0.25 * full["z_resid_12m1m"]
+        )
+        full["nse_factor_prior"] = np.where(dm_zone, 0.50 * base_prior + 0.50 * dm_defensive, base_prior)
+    else:
+        full["nse_factor_prior"] = base_prior
 
     full["target_alpha"] = (full["fwd_ret"] - full["bench_fwd_ret"]).clip(-0.45, 0.45)
+    # V7 Vasicek Beta-Adjusted Residual Sharpe target (strips market-beta bull chasing)
+    resid_fwd = full["fwd_ret"] - full["beta_vasicek"] * full["bench_fwd_ret"]
+    full["target_resid_sharpe"] = (resid_fwd / full["vol_safe"].clip(lower=0.12)).clip(-3.0, 3.0)
     full["target_beat"] = (full["target_alpha"] > 0.0).astype(int)
+
+    active_feats = V6_FEATURE_COLS if model_version == "v6" else FEATURE_COLS
 
     # Latest row per equity symbol for live inference (strictly excluding benchmark & reserve ETFs)
     latest_df = full[~full["symbol"].isin(NON_EQUITY_SYMBOLS)].sort_values("date").groupby("symbol", as_index=False).last()
-    for col in FEATURE_COLS:
+    for col in active_feats:
         latest_df[col] = latest_df[col].replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
     # Labeled training panel (strictly excluding benchmark & reserve ETFs)
     panel = full[~full["symbol"].isin(NON_EQUITY_SYMBOLS)].dropna(
-        subset=["target_alpha", "fwd_ret", "bench_fwd_ret", "tb_label", "sma200", "vol_252d", "fip_smooth_6m"]
+        subset=["target_alpha", "target_resid_sharpe", "fwd_ret", "bench_fwd_ret", "tb_label", "sma200", "vol_252d", "fip_smooth_6m"]
     ).copy()
-    panel["fwd_rank"] = panel.groupby("date")["target_alpha"].rank(pct=True)
-    for col in FEATURE_COLS:
+    if model_version == "v6":
+        panel["fwd_rank"] = panel.groupby("date")["target_alpha"].rank(pct=True)
+    else:
+        panel["fwd_rank"] = panel.groupby("date")["target_resid_sharpe"].rank(pct=True)
+    for col in active_feats:
         panel[col] = panel[col].replace([np.inf, -np.inf], np.nan).fillna(0.0)
     panel["tb_label"] = panel["tb_label"].astype(int)
 
     return panel, latest_df
-
-
-_DATE_MACRO_COLS = {"vix_level", "bench_dist_200", "nse_breadth_50d"}
-CS_FEATURE_INDICES: list[int] = [i for i, c in enumerate(FEATURE_COLS) if c not in _DATE_MACRO_COLS]
 
 
 def _mean_daily_cs_auc(df: pd.DataFrame, label_col: str, prob_col: str) -> float:
@@ -529,13 +688,23 @@ def _mean_daily_cs_auc(df: pd.DataFrame, label_col: str, prob_col: str) -> float
         return 0.5
 
 
-def _fit_r4_ensemble(X: np.ndarray, y_rank: np.ndarray, y_beat: np.ndarray, y_tb: np.ndarray) -> dict[str, Any]:
+def _fit_r4_ensemble(
+    X: np.ndarray,
+    y_rank: np.ndarray,
+    y_beat: np.ndarray,
+    y_tb: np.ndarray,
+    cs_indices: list[int] | None = None,
+    ridge_cs_only: bool = True,
+) -> dict[str, Any]:
+    idx_cs = CS_FEATURE_INDICES if cs_indices is None else cs_indices
+    X_cs = X[:, idx_cs]
+    X_ridge = X_cs if ridge_cs_only else X
+
     ridge_rank = Pipeline([("scaler", StandardScaler()), ("model", Ridge(alpha=500.0))])
     gbr_rank = HistGradientBoostingRegressor(
         max_depth=2, learning_rate=0.03, max_iter=65, min_samples_leaf=100, l2_regularization=10.0, random_state=42
     )
     # Binary payoff heads use strictly cross-sectional stock features (prevents VIX time-series inversion!)
-    X_cs = X[:, CS_FEATURE_INDICES]
     logit_beat = Pipeline([("scaler", StandardScaler()), ("model", LogisticRegression(C=0.05, max_iter=300))])
     gbc_beat = HistGradientBoostingClassifier(
         max_depth=2, learning_rate=0.03, max_iter=55, min_samples_leaf=120, l2_regularization=15.0, random_state=42
@@ -545,7 +714,7 @@ def _fit_r4_ensemble(X: np.ndarray, y_rank: np.ndarray, y_beat: np.ndarray, y_tb
         max_depth=2, learning_rate=0.03, max_iter=55, min_samples_leaf=120, l2_regularization=15.0, random_state=42
     )
 
-    ridge_rank.fit(X, y_rank)
+    ridge_rank.fit(X_ridge, y_rank)
     gbr_rank.fit(X, y_rank)
     logit_beat.fit(X_cs, y_beat)
     gbc_beat.fit(X_cs, y_beat)
@@ -559,12 +728,16 @@ def _fit_r4_ensemble(X: np.ndarray, y_rank: np.ndarray, y_beat: np.ndarray, y_tb
         "gbc_beat": gbc_beat,
         "logit_tb": logit_tb,
         "gbc_tb": gbc_tb,
+        "cs_indices": idx_cs,
+        "ridge_cs_only": ridge_cs_only,
     }
 
 
 def _predict_r4_ensemble(models: dict[str, Any], X: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    X_cs = X[:, CS_FEATURE_INDICES]
-    pred_rank = 0.60 * models["ridge_rank"].predict(X) + 0.40 * models["gbr_rank"].predict(X)
+    idx_cs = models.get("cs_indices", CS_FEATURE_INDICES)
+    X_cs = X[:, idx_cs]
+    X_ridge = X_cs if models.get("ridge_cs_only", True) else X
+    pred_rank = 0.60 * models["ridge_rank"].predict(X_ridge) + 0.40 * models["gbr_rank"].predict(X)
     prob_beat = 0.65 * models["logit_beat"].predict_proba(X_cs)[:, 1] + 0.35 * models["gbc_beat"].predict_proba(X_cs)[:, 1]
     prob_tb = 0.65 * models["logit_tb"].predict_proba(X_cs)[:, 1] + 0.35 * models["gbc_tb"].predict_proba(X_cs)[:, 1]
     return pred_rank, prob_beat, prob_tb
@@ -574,11 +747,26 @@ def train_and_predict_universe(
     db: Database,
     horizon: int = ML_HORIZON_DAYS,
     tb_horizon: int = TB_HORIZON_DAYS,
+    model_version: str = "v7",
+    prior_variant: str = "book",
+    enable_dm_damper: bool = True,
+    persist: bool = True,
 ) -> dict[str, Any]:
-    """Run strict 5-fold expanding walk-forward validation (V6 Hybrid architecture) and save predictions."""
-    panel, latest_df = _build_panel(db, horizon=horizon, tb_horizon=tb_horizon)
+    """Run strict 5-fold expanding walk-forward validation (V7 Canonical Book Hybrid) and save predictions."""
+    panel, latest_df = _build_panel(
+        db,
+        horizon=horizon,
+        tb_horizon=tb_horizon,
+        model_version=model_version,
+        prior_variant=prior_variant,
+        enable_dm_damper=enable_dm_damper,
+    )
     if panel.empty or len(panel) < 250:
         raise ValueError("Insufficient historical observations to train ML ranking model.")
+
+    active_feats = V6_FEATURE_COLS if model_version == "v6" else FEATURE_COLS
+    cs_indices = [i for i, c in enumerate(active_feats) if c not in _DATE_MACRO_COLS]
+    ridge_cs_only = model_version != "v6"
 
     unique_dates = sorted(panel["date"].unique())
     n_dates = len(unique_dates)
@@ -613,24 +801,25 @@ def train_and_predict_universe(
         if len(train_df) < 200 or len(test_df) < 30:
             continue
 
-        X_tr = train_df[FEATURE_COLS].to_numpy(dtype=float)
+        X_tr = train_df[active_feats].to_numpy(dtype=float)
         models = _fit_r4_ensemble(
             X_tr,
             train_df["fwd_rank"].to_numpy(dtype=float),
             train_df["target_beat"].to_numpy(dtype=int),
             train_df["tb_label"].to_numpy(dtype=int),
+            cs_indices=cs_indices,
+            ridge_cs_only=ridge_cs_only,
         )
 
-        X_te = test_df[FEATURE_COLS].to_numpy(dtype=float)
+        X_te = test_df[active_feats].to_numpy(dtype=float)
         p_rank, p_beat, p_tb = _predict_r4_ensemble(models, X_te)
         test_df["ml_rank"] = p_rank
         test_df["prob_beat"] = p_beat
         test_df["prob_tb_win"] = p_tb
 
-        # Daily standardized Hybrid Score: 50% NSE Institutional Factor Prior + 50% 40D Rank-ML
+        # Daily standardized Hybrid Score: 50% Canonical Factor Prior + 50% 40D Residual-Target ML
         test_df["z_ml_rank"] = test_df.groupby("date")["ml_rank"].transform(_cs_zscore).fillna(0.0)
         test_df["r4_score"] = 0.50 * test_df["nse_factor_prior"] + 0.50 * test_df["z_ml_rank"]
-        # Scale standardized hybrid score to realistic expected excess return % for display (~2.5% per 1 sigma)
         test_df["pred_alpha_pct"] = (test_df["r4_score"] * 2.5).clip(-12.0, 12.0)
 
         oos_frames.append(
@@ -642,7 +831,7 @@ def train_and_predict_universe(
         test_dates = sorted(test_df["date"].unique())
         f_top, f_bench, f_hits, f_tb = [], [], [], []
         for dt in test_dates[::20]:
-            top_k = test_df[test_df["date"] == dt].sort_values("r4_score", ascending=False).head(8)
+            top_k = test_df[test_df["date"] == dt].sort_values("r4_score", ascending=False).head(10)
             if top_k.empty:
                 continue
             r_top = float(top_k["fwd_ret"].mean())
@@ -692,7 +881,7 @@ def train_and_predict_universe(
                 continue
             rt_l, rb_l = [], []
             for dt in sorted(sub["date"].unique())[::20]:
-                tk = sub[sub["date"] == dt].sort_values("r4_score", ascending=False).head(8)
+                tk = sub[sub["date"] == dt].sort_values("r4_score", ascending=False).head(10)
                 if not tk.empty:
                     rt_l.append(float(tk["fwd_ret"].mean()))
                     rb_l.append(float(tk["bench_fwd_ret"].mean()))
@@ -710,20 +899,30 @@ def train_and_predict_universe(
     tb_top_prec = float(np.mean(top8_tb_wins)) * 100.0 if top8_tb_wins else 50.0
 
     # Fit final production ensemble on ALL labeled NSE history
-    X_all = panel[FEATURE_COLS].to_numpy(dtype=float)
+    X_all = panel[active_feats].to_numpy(dtype=float)
     final_models = _fit_r4_ensemble(
         X_all,
         panel["fwd_rank"].to_numpy(dtype=float),
         panel["target_beat"].to_numpy(dtype=int),
         panel["tb_label"].to_numpy(dtype=int),
+        cs_indices=cs_indices,
+        ridge_cs_only=ridge_cs_only,
     )
 
-    c_rank = final_models["ridge_rank"].named_steps["model"].coef_
+    c_rank_raw = final_models["ridge_rank"].named_steps["model"].coef_
+    c_rank_full = np.zeros(len(active_feats), dtype=float)
+    if ridge_cs_only:
+        for pos_cs, feat_idx in enumerate(cs_indices):
+            c_rank_full[feat_idx] = float(c_rank_raw[pos_cs])
+    else:
+        c_rank_full = np.asarray(c_rank_raw, dtype=float)
+
     c_tb_cs = final_models["logit_tb"].named_steps["model"].coef_[0]
-    c_tb_full = np.zeros(len(FEATURE_COLS), dtype=float)
-    for pos_cs, feat_idx in enumerate(CS_FEATURE_INDICES):
-        c_tb_full[feat_idx] = abs(c_tb_cs[pos_cs])
-    norm_rank = np.abs(c_rank) / (np.sum(np.abs(c_rank)) or 1.0)
+    c_tb_full = np.zeros(len(active_feats), dtype=float)
+    for pos_cs, feat_idx in enumerate(cs_indices):
+        c_tb_full[feat_idx] = abs(float(c_tb_cs[pos_cs]))
+
+    norm_rank = np.abs(c_rank_full) / (np.sum(np.abs(c_rank_full)) or 1.0)
     norm_tb = c_tb_full / (np.sum(c_tb_full) or 1.0)
     blended_imp = 0.70 * norm_rank + 0.30 * norm_tb
     feat_imps = sorted(
@@ -732,16 +931,17 @@ def train_and_predict_universe(
                 "feature": col,
                 "label": FEATURE_LABELS.get(col, col),
                 "importance_pct": round(float(imp * 100.0), 1),
-                "direction": "positive" if c_rank[i] >= 0 else "negative",
+                "direction": "positive" if c_rank_full[i] >= 0 else "negative",
             }
-            for i, (col, imp) in enumerate(zip(FEATURE_COLS, blended_imp))
+            for i, (col, imp) in enumerate(zip(active_feats, blended_imp))
         ],
         key=lambda x: x["importance_pct"],
         reverse=True,
     )
 
-    # Live inference across all NSE symbols
-    X_latest = latest_df[FEATURE_COLS].to_numpy(dtype=float)
+    # Live inference across all clean NSE equity symbols
+    latest_df = latest_df.reset_index(drop=True)
+    X_latest = latest_df[active_feats].to_numpy(dtype=float)
     p_rank_arr, p_beat_arr, p_tb_arr = _predict_r4_ensemble(final_models, X_latest)
     z_ml_live = _cs_zscore(pd.Series(p_rank_arr)).to_numpy(dtype=float)
     prior_live = latest_df["nse_factor_prior"].fillna(0.0).to_numpy(dtype=float)
@@ -753,14 +953,13 @@ def train_and_predict_universe(
 
     for idx, row in latest_df.iterrows():
         sym = str(row["symbol"])
+        if sym in NON_EQUITY_SYMBOLS:
+            continue
         close_px = float(row["close"])
         atr = float(row["atr14"]) if pd.notna(row.get("atr14")) and row["atr14"] > 0 else close_px * 0.02
         alpha_pct = float(np.clip(r4_live[idx] * 2.5, -14.0, 14.0))
         p_beat = float(np.clip(p_beat_arr[idx], 0.10, 0.90))
         p_tb = float(np.clip(p_tb_arr[idx], 0.10, 0.90))
-
-        if sym in NON_EQUITY_SYMBOLS:
-            continue
 
         exp_ret_h = nifty_base_h + (alpha_pct / 100.0)
         vol_ann = float(row["vol_252d"]) if pd.notna(row.get("vol_252d")) and row["vol_252d"] > 0 else 0.24
@@ -797,20 +996,23 @@ def train_and_predict_universe(
         {
             "date": str(r["date"]),
             "symbol": str(r["symbol"]),
-            "pred_alpha": round(float(r["r4_score"]), 5),  # exact R4 score persisted for portfolio backtester
+            "pred_alpha": round(float(r["r4_score"]), 5),
             "prob_tb_win": round(float(r["prob_tb_win"]) * 100.0, 2),
             "actual_fwd_20d": round(float(r["fwd_ret"]) * 100.0, 4),
             "bench_fwd_20d": round(float(r["bench_fwd_ret"]) * 100.0, 4),
             "tb_outcome": int(r["tb_label"]),
         }
         for _, r in oos_all.iterrows()
+        if str(r["symbol"]) not in NON_EQUITY_SYMBOLS
     ]
 
     run_meta = {
         "trained_at": now_iso,
+        "model_version": model_version,
+        "prior_variant": prior_variant,
         "horizon_days": horizon,
         "sample_count": int(len(panel)),
-        "symbol_count": int(latest_df["symbol"].nunique()),
+        "symbol_count": int(len(predictions)),
         "hit_rate": round(hit_rate, 1),
         "ic_spearman": round(ic_overall, 3),
         "top5_spread": round(avg_top - avg_bench, 2),
@@ -822,6 +1024,13 @@ def train_and_predict_universe(
         "folds": folds_summary,
         "regime_stats": regime_stats,
     }
-    db.save_ml_run(run_meta, predictions, oos_rows=oos_rows)
-    invalidate_macro_cache()
-    return {"run": run_meta, "predictions_count": len(predictions), "oos_rows_count": len(oos_rows)}
+    if persist:
+        db.save_ml_run(run_meta, predictions, oos_rows=oos_rows)
+        invalidate_macro_cache()
+    return {
+        "run": run_meta,
+        "predictions_count": len(predictions),
+        "oos_rows_count": len(oos_rows),
+        "predictions": predictions,
+        "oos_rows": oos_rows,
+    }

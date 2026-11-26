@@ -1,7 +1,7 @@
 """
-EquiLens India V6 — Live NSE Rebalance Ticket Generator, Data Freshness Guard,
-Peak-NAV Drawdown Brake, 70/30 LIQUIDCASE/GOLDBEES Reserve, FIFO Indian Tax
-& Forward-Proof Paper-Trading Ledger.
+EquiLens India V7 — Live NSE Rebalance Ticket Generator, Data Freshness Guard,
+HRP Risk Allocation, ADV Liquidity Guard, Peak-NAV Drawdown Brake, 70/30 LIQUIDCASE/GOLDBEES
+Reserve, FIFO Indian Tax & 4-Tranche Staggered Paper-Trading Ledger.
 """
 
 from __future__ import annotations
@@ -13,15 +13,27 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from .config import BENCHMARK_SYMBOL, DEFAULT_COST_BPS, FX_MACRO_SYMBOL, GOLD_MACRO_SYMBOL, GOLDBEES_SYMBOL, NON_EQUITY_SYMBOLS
+from .config import (
+    BENCHMARK_SYMBOL,
+    DEFAULT_COST_BPS,
+    FX_MACRO_SYMBOL,
+    GOLD_MACRO_SYMBOL,
+    GOLDBEES_SYMBOL,
+    NON_EQUITY_SYMBOLS,
+    STRATEGY_ID_EXECUTION,
+    TRI_BENCHMARK_SYMBOL,
+)
 from .data_health import build_clean_price_matrix, evaluate_data_freshness
 from .database import Database
+from .hrp_allocator import apply_concentration_caps, compute_hrp_weights
 from .indian_costs import FifoTaxLedger, compute_indian_delivery_cost
 from .ml_predictor import compute_current_macro_regime
+from .nse_calendar import add_nse_trading_days
 
 INDIA_LIQUIDCASE_ANNUAL_YIELD = 0.062
-INDIA_STCG_TAX_RATE = 0.208
+INDIA_STCG_TAX_RATE = 0.208  # 20% + 4% Health & Education Cess
 DRAWDOWN_BRAKE_RELEASE = -0.06
+ADV_LIQUIDITY_CAP_PCT = 2.0  # Warn if single order exceeds 2.0% of 20D NSE ADV
 
 
 def _days_to_next_earnings(earn_rows: list[dict[str, Any]], as_of_date: str) -> tuple[int | None, str | None]:
@@ -69,6 +81,8 @@ def _latest_prices_and_matrices(db: Database) -> dict[str, Any]:
     return {
         "prices_df": prices_df,
         "log_rets": log_rets,
+        "adv_df": adv_df,
+        "tradable_df": tradable_df,
         "latest_date": latest_date,
         "latest_px": latest_px,
         "latest_adv": latest_adv,
@@ -105,6 +119,7 @@ def _gold_return_since(db: Database, from_date: str, to_date: str) -> float:
 
 
 def _ensure_fifo_ledger(db: Database, acct: dict[str, Any] | None, positions: list[dict[str, Any]]) -> FifoTaxLedger:
+    """Load persistent FIFO lots, seamlessly bootstrapping from existing paper_positions if migrating."""
     lot_rows = db.get_paper_lots() if hasattr(db, "get_paper_lots") else []
     stcl = float(acct.get("stcl_carry_inr", 0.0) or 0.0) if acct else 0.0
     ltcl = float(acct.get("ltcl_carry_inr", 0.0) or 0.0) if acct else 0.0
@@ -118,8 +133,47 @@ def _ensure_fifo_ledger(db: Database, acct: dict[str, Any] | None, positions: li
             shares=float(p["shares"]),
             price=float(p["avg_cost"]),
             buy_cost_inr=0.0,
+            sleeve_id=1,
         )
     return ledger
+
+
+def _ensure_sleeves(db: Database, start_date: str) -> list[dict[str, Any]]:
+    """Return 4 staggered 25% sleeves (10 NSE trading days apart); migrate Sleeve 1 seamlessly on upgrade."""
+    existing = db.get_paper_sleeves() if hasattr(db, "get_paper_sleeves") else []
+    if existing and len(existing) == 4:
+        return existing
+    base = str(start_date)[:10]
+    return [
+        {
+            "sleeve_id": 1,
+            "last_rebalance_date": base,
+            "next_rebalance_date": add_nse_trading_days(base, 40),
+            "status": "active",
+            "target_weight_pct": 25.0,
+        },
+        {
+            "sleeve_id": 2,
+            "last_rebalance_date": None,
+            "next_rebalance_date": add_nse_trading_days(base, 10),
+            "status": "scheduled",
+            "target_weight_pct": 25.0,
+        },
+        {
+            "sleeve_id": 3,
+            "last_rebalance_date": None,
+            "next_rebalance_date": add_nse_trading_days(base, 20),
+            "status": "scheduled",
+            "target_weight_pct": 25.0,
+        },
+        {
+            "sleeve_id": 4,
+            "last_rebalance_date": None,
+            "next_rebalance_date": add_nse_trading_days(base, 30),
+            "status": "scheduled",
+            "target_weight_pct": 25.0,
+        },
+    ]
 
 
 def generate_rebalance_ticket(
@@ -133,8 +187,9 @@ def generate_rebalance_ticket(
     current_holdings: list[dict[str, Any]] | None = None,
     cost_bps: float = DEFAULT_COST_BPS,
     use_statutory_costs: bool = True,
+    weighting_mode: str = "hrp",
 ) -> dict[str, Any]:
-    """Generate an executable V6 NSE rebalance ticket with exact integer shares & FIFO Indian tax/costs."""
+    """Generate an executable V7 NSE rebalance ticket with HRP weights, ADV cap guard & FIFO Indian tax/costs."""
     preds = db.get_ml_predictions()
     if not preds:
         raise ValueError("No ML predictions available. Train the model first.")
@@ -184,6 +239,8 @@ def generate_rebalance_ticket(
             shield_status = sh["status"]
             shield_flags = sh["flags"]
 
+        alpha_40 = float(p.get("pred_alpha_40d", p.get("pred_alpha_20d", 0.0)))
+        vol_ann = float(p.get("vol_252d_ann", p.get("vol_20d_ann", 24.0))) / 100.0
         ranked_rows.append(
             {
                 "symbol": sym,
@@ -191,9 +248,9 @@ def generate_rebalance_ticket(
                 "sector": t_meta.get("sector", "Other"),
                 "price": latest_px[sym],
                 "tradable": latest_tradable.get(sym, True),
-                "pred_alpha": float(p.get("pred_alpha_20d", 0.0)),
+                "pred_alpha": alpha_40,
                 "prob_tb_win": float(p.get("prob_tb_win", 50.0)),
-                "vol_ann": max(0.12, float(p.get("vol_20d_ann", 24.0)) / 100.0),
+                "vol_ann": max(0.12, vol_ann),
                 "target_price": p.get("target_price"),
                 "stop_price": p.get("stop_price"),
                 "days_to_earnings": dte,
@@ -244,6 +301,7 @@ def generate_rebalance_ticket(
         sec = row_by_sym[sym]["sector"]
         sec_counts[sec] = sec_counts.get(sec, 0) + 1
 
+    # Retain existing winners inside Top-30 hysteresis buffer
     for sym in sorted(held_map.keys(), key=lambda s: row_by_sym.get(s, {}).get("rank", 999)):
         if sym in row_by_sym and row_by_sym[sym]["rank"] <= rank_buffer and _can_add(sym):
             _add(sym)
@@ -301,6 +359,7 @@ def generate_rebalance_ticket(
     if not chosen:
         raise ValueError("Unable to construct a valid NSE portfolio from current predictions.")
 
+    # Portfolio Weighting: V7 López de Prado HRP (126D Ledoit-Wolf) or V6 Correlation-Penalized Inv-Vol
     vols = np.array([row_by_sym[s]["vol_ann"] for s in chosen], dtype=float)
     avg_corrs = np.full(len(chosen), 0.20, dtype=float)
     portfolio_avg_corr = 0.20
@@ -311,12 +370,22 @@ def generate_rebalance_ticket(
         avg_c = np.nanmean(np.clip(cmat, 0.0, 1.0), axis=1)
         avg_corrs = np.where(np.isfinite(avg_c), avg_c, 0.20)
         portfolio_avg_corr = float(np.nanmean(cmat)) if np.isfinite(np.nanmean(cmat)) else 0.20
-        raw_vec = 1.0 / (vols * (1.0 + avg_corrs))
     else:
-        raw_vec = 1.0 / vols
+        sub_r = None
 
-    unit_weights = raw_vec / max(1e-9, float(np.sum(raw_vec)))
+    if weighting_mode == "hrp":
+        unit_map = compute_hrp_weights(
+            symbols=chosen,
+            returns_window=sub_r,
+            fallback_vols={s: row_by_sym[s]["vol_ann"] for s in chosen},
+            target_exposure=1.0,
+        )
+        unit_weights = np.array([unit_map[s] for s in chosen], dtype=float)
+    else:
+        raw_vec = 1.0 / (vols * (1.0 + avg_corrs)) if sub_r is not None else 1.0 / vols
+        unit_weights = raw_vec / max(1e-9, float(np.sum(raw_vec)))
 
+    # Ex-Ante 60D Portfolio Volatility & Vol-Targeting Cap (60D sample covariance)
     ex_ante_vol_ann = float(np.mean(vols) * 0.72)
     vol_cap = 1.0
     if len(chosen) >= 2 and len(log_rets) >= 65 and all(s in log_rets.columns for s in chosen):
@@ -326,9 +395,9 @@ def generate_rebalance_ticket(
     if vol_target is not None:
         vol_cap = float(np.clip(vol_target / max(0.08, ex_ante_vol_ann), 0.25, 1.0))
 
-    from .portfolio_backtester import DRAWDOWN_BRAKE_TRIGGER, GOLDBEES_RESERVE_SHARE, apply_concentration_caps
+    from .portfolio_backtester import DRAWDOWN_BRAKE_TRIGGER, GOLDBEES_RESERVE_SHARE
 
-    # Fixed Safety #1: True Peak-to-Trough -10% Drawdown Brake with hysteresis release
+    # True peak-to-trough -10% drawdown brake with -6% hysteresis release
     final_equity_exp = min(gate_exp, vol_cap)
     dd_brake_active = False
     peak_nav_ref = capital_inr
@@ -361,7 +430,7 @@ def generate_rebalance_ticket(
     def _calc_order_cost(side: str, sym: str, gross: float) -> dict[str, float]:
         if not use_statutory_costs:
             c = round(gross * (cost_bps / 10000.0), 2)
-            return {"total_cost_inr": c, "statutory_inr": c, "slippage_inr": 0.0}
+            return {"total_cost_inr": c, "statutory_inr": c, "slippage_inr": 0.0, "total_cost_bps": cost_bps}
         dvol = row_by_sym.get(sym, {}).get("vol_ann", 0.24) / np.sqrt(252.0)
         return compute_indian_delivery_cost(
             side=side,
@@ -372,13 +441,23 @@ def generate_rebalance_ticket(
             include_dp_charge=True,
         )
 
+    def _adv_check(sym: str, gross: float) -> tuple[float | None, bool]:
+        adv = latest_adv.get(sym)
+        if not adv or adv <= 0 or gross <= 0:
+            return None, False
+        part_pct = round((gross / adv) * 100.0, 3)
+        return part_pct, bool(part_pct > ADV_LIQUIDITY_CAP_PCT)
+
     orders: list[dict[str, Any]] = []
     est_total_fees = 0.0
+    est_statutory_fees = 0.0
+    est_slippage_fees = 0.0
     est_stcg_tax = 0.0
     est_ltcg_tax = 0.0
     est_realized_pnl = 0.0
     allocated_equity_inr = 0.0
 
+    # Exits (held stocks not in chosen)
     for sym, h in held_map.items():
         if sym in chosen:
             continue
@@ -392,9 +471,12 @@ def generate_rebalance_ticket(
         stcg_t = tx["stcg_tax_inr"]
         ltcg_t = tx["ltcg_tax_inr"]
         est_total_fees += fee
+        est_statutory_fees += cd["statutory_inr"]
+        est_slippage_fees += cd["slippage_inr"]
         est_realized_pnl += rpnl
         est_stcg_tax += stcg_t
         est_ltcg_tax += ltcg_t
+        adv_part, adv_warn = _adv_check(sym, gross)
         rinfo = row_by_sym.get(sym, {})
         rk = rinfo.get("rank")
         reason = f"Dropped below Top-{rank_buffer} rank buffer (now #{rk})" if rk else "Exited universe / sector cap"
@@ -412,7 +494,11 @@ def generate_rebalance_ticket(
                 "target_weight_pct": 0.0,
                 "target_value_inr": 0.0,
                 "order_value_inr": round(gross, 2),
+                "adv_participation_pct": adv_part,
+                "adv_cap_warning": adv_warn,
                 "est_fee_inr": round(fee, 2),
+                "est_statutory_inr": round(cd["statutory_inr"], 2),
+                "est_slippage_inr": round(cd["slippage_inr"], 2),
                 "est_realized_pnl_inr": round(rpnl, 2),
                 "est_stcg_tax_inr": round(stcg_t, 2),
                 "est_ltcg_tax_inr": round(ltcg_t, 2),
@@ -427,6 +513,7 @@ def generate_rebalance_ticket(
             }
         )
 
+    # Target positions
     for idx, sym in enumerate(chosen):
         r = row_by_sym[sym]
         px = r["price"]
@@ -444,10 +531,13 @@ def generate_rebalance_ticket(
         stcg_t = 0.0
         ltcg_t = 0.0
         fee = 0.0
+        stat_f = 0.0
+        slip_f = 0.0
 
         if cur_sh == 0 and target_sh > 0:
             action = "BUY"
-            fee = _calc_order_cost("BUY", sym, order_val)["total_cost_inr"]
+            cd = _calc_order_cost("BUY", sym, order_val)
+            fee, stat_f, slip_f = cd["total_cost_inr"], cd["statutory_inr"], cd["slippage_inr"]
             reason = f"New Top-{top_k} entry (Rank #{r['rank']}, 40D alpha {r['pred_alpha']:+.2f}%)"
         elif delta_sh == 0 or (cur_sh > 0 and abs(delta_sh) / max(1, cur_sh) < 0.08):
             target_sh = cur_sh
@@ -459,11 +549,13 @@ def generate_rebalance_ticket(
             reason = f"Retained inside Top-{rank_buffer} hysteresis buffer (Rank #{r['rank']})"
         elif delta_sh > 0:
             action = "ADD"
-            fee = _calc_order_cost("BUY", sym, order_val)["total_cost_inr"]
+            cd = _calc_order_cost("BUY", sym, order_val)
+            fee, stat_f, slip_f = cd["total_cost_inr"], cd["statutory_inr"], cd["slippage_inr"]
             reason = f"Rebalance top-up (+{delta_sh} sh) inside Top-{rank_buffer} buffer"
         else:
             action = "TRIM"
-            fee = _calc_order_cost("SELL", sym, order_val)["total_cost_inr"]
+            cd = _calc_order_cost("SELL", sym, order_val)
+            fee, stat_f, slip_f = cd["total_cost_inr"], cd["statutory_inr"], cd["slippage_inr"]
             tx = fifo_sim.sell(sym, latest_date, float(abs(delta_sh)), px, sell_cost_inr=fee)
             rpnl = tx["realized_pnl_inr"]
             stcg_t = tx["stcg_tax_inr"]
@@ -474,6 +566,9 @@ def generate_rebalance_ticket(
             reason = f"Risk/vol rebalance trim ({delta_sh} sh)"
 
         est_total_fees += fee
+        est_statutory_fees += stat_f
+        est_slippage_fees += slip_f
+        adv_part, adv_warn = _adv_check(sym, order_val)
 
         orders.append(
             {
@@ -489,7 +584,11 @@ def generate_rebalance_ticket(
                 "target_weight_pct": round((actual_val / max(1.0, capital_inr)) * 100.0, 2),
                 "target_value_inr": round(actual_val, 2),
                 "order_value_inr": round(order_val, 2),
+                "adv_participation_pct": adv_part,
+                "adv_cap_warning": adv_warn,
                 "est_fee_inr": round(fee, 2),
+                "est_statutory_inr": round(stat_f, 2),
+                "est_slippage_inr": round(slip_f, 2),
                 "est_realized_pnl_inr": round(rpnl, 2),
                 "est_stcg_tax_inr": round(stcg_t, 2),
                 "est_ltcg_tax_inr": round(ltcg_t, 2),
@@ -534,11 +633,18 @@ def generate_rebalance_ticket(
     goldbees_alloc_inr = cash_reserve_inr * GOLDBEES_RESERVE_SHARE
     liquidcase_alloc_inr = cash_reserve_inr - goldbees_alloc_inr
     sector_breakdown = [
-        {"sector": sec, "count": cnt, "weight_pct": round(sum(o["target_weight_pct"] for o in orders if o["sector"] == sec and o["target_shares"] > 0), 1)}
+        {
+            "sector": sec,
+            "count": cnt,
+            "weight_pct": round(
+                sum(o["target_weight_pct"] for o in orders if o["sector"] == sec and o["target_shares"] > 0), 1
+            ),
+        }
         for sec, cnt in sorted(sec_counts.items(), key=lambda kv: kv[1], reverse=True)
     ]
 
     return {
+        "strategy_id": STRATEGY_ID_EXECUTION,
         "as_of_date": latest_date,
         "data_freshness": freshness,
         "config": {
@@ -548,6 +654,8 @@ def generate_rebalance_ticket(
             "max_per_sector": effective_max_per_sec,
             "max_stock_weight_pct": round(max_stock_w * 100.0, 1),
             "max_sector_weight_pct": round(max_sector_w * 100.0, 1),
+            "weighting_mode": weighting_mode,
+            "adv_liquidity_cap_pct": ADV_LIQUIDITY_CAP_PCT,
             "dd_brake_trigger_pct": round(DRAWDOWN_BRAKE_TRIGGER * 100.0, 1),
             "dd_brake_release_pct": round(DRAWDOWN_BRAKE_RELEASE * 100.0, 1),
             "goldbees_reserve_pct": round(GOLDBEES_RESERVE_SHARE * 100.0, 1),
@@ -555,11 +663,14 @@ def generate_rebalance_ticket(
             "vol_target_pct": round(vol_target * 100.0, 1) if vol_target else None,
             "skip_earnings_blackout": skip_earnings_blackout,
             "enforce_smart_money_shield": enforce_smart_money_shield,
+            "cost_model": "indian_statutory_delivery_adv" if use_statutory_costs else "flat_bps",
             "cost_bps": cost_bps,
         },
         "summary": {
             "macro_regime": macro["regime"],
             "macro_tone": macro["tone"],
+            "dm_crash_damper_active": macro.get("dm_crash_damper_active", False),
+            "avg_corr_63": macro.get("avg_corr_63"),
             "dd_brake_active": dd_brake_active,
             "peak_nav_ref_inr": round(peak_nav_ref, 2),
             "current_dd_pct": round(cur_dd_pct, 2),
@@ -578,10 +689,13 @@ def generate_rebalance_ticket(
             "positions_count": sum(1 for o in orders if o["target_shares"] > 0),
             "trades_count": sum(1 for o in orders if o["delta_shares"] != 0),
             "est_total_fees_inr": round(est_total_fees, 2),
+            "est_statutory_fees_inr": round(est_statutory_fees, 2),
+            "est_slippage_fees_inr": round(est_slippage_fees, 2),
             "est_realized_pnl_inr": round(est_realized_pnl, 2),
             "est_stcg_tax_inr": round(est_stcg_tax, 2),
             "est_ltcg_tax_inr": round(est_ltcg_tax, 2),
             "blackout_warnings": sum(1 for o in orders if o["earnings_blackout"]),
+            "adv_cap_warnings": sum(1 for o in orders if o.get("adv_cap_warning")),
         },
         "sector_breakdown": sector_breakdown,
         "skipped_blackout": skipped_blackout,
@@ -592,10 +706,10 @@ def generate_rebalance_ticket(
 
 
 def get_paper_ledger_status(db: Database) -> dict[str, Any]:
-    """Mark open paper positions & 70/30 LIQUIDCASE/GOLDBEES reserve forward vs NIFTY 50."""
+    """Mark open paper-trading positions & 70/30 LIQUIDCASE/GOLDBEES reserve forward vs NIFTY 50 TRI."""
     acct = db.get_paper_account()
     if not acct:
-        return {"initialized": False, "account": None, "positions": [], "trades": []}
+        return {"initialized": False, "account": None, "positions": [], "trades": [], "sleeves": []}
 
     mkt = _latest_prices_and_matrices(db)
     latest_px: dict[str, float] = mkt["latest_px"]
@@ -620,7 +734,7 @@ def get_paper_ledger_status(db: Database) -> dict[str, Any]:
     gold_pnl = base_gold * gold_ret
     liquidcase_now = base_liq + accrued_cash_interest
     goldbees_now = base_gold + gold_pnl
-    cash_now = liquidcase_now + goldbees_now
+    cash_reserve_now = liquidcase_now + goldbees_now
 
     marked_positions: list[dict[str, Any]] = []
     equity_val = 0.0
@@ -651,19 +765,32 @@ def get_paper_ledger_status(db: Database) -> dict[str, Any]:
             }
         )
 
-    total_nav = equity_val + cash_now
+    total_nav = equity_val + cash_reserve_now
     init_cap = float(acct["initial_capital"])
     peak_nav = max(float(acct.get("peak_nav_inr") or init_cap), total_nav)
     cur_dd_pct = ((total_nav / max(1.0, peak_nav)) - 1.0) * 100.0
     total_return_inr = total_nav - init_cap
     total_return_pct = ((total_nav / max(1.0, init_cap)) - 1.0) * 100.0
 
-    bench_now = float(latest_px.get(BENCHMARK_SYMBOL, acct["bench_entry_price"]))
-    bench_entry = float(acct["bench_entry_price"])
-    bench_ret_pct = ((bench_now / max(1.0, bench_entry)) - 1.0) * 100.0
+    # Benchmark comparison: prefer NIFTY 50 TRI proxy when entry & latest exist
+    tri_now = latest_px.get(TRI_BENCHMARK_SYMBOL)
+    tri_entry = acct.get("bench_tri_entry_price")
+    if tri_now and tri_entry and float(tri_entry) > 0:
+        bench_ret_pct = ((float(tri_now) / float(tri_entry)) - 1.0) * 100.0
+        bench_type = "TRI"
+        bench_sym_used = TRI_BENCHMARK_SYMBOL
+    else:
+        bench_now = float(latest_px.get(BENCHMARK_SYMBOL, acct["bench_entry_price"]))
+        bench_entry = float(acct["bench_entry_price"])
+        bench_ret_pct = ((bench_now / max(1.0, bench_entry)) - 1.0) * 100.0
+        bench_type = "PRICE"
+        bench_sym_used = BENCHMARK_SYMBOL
 
     fifo_ledger = _ensure_fifo_ledger(db, acct, positions)
     liq_est = fifo_ledger.estimate_liquidation(latest_date[:10], latest_px, adv_map=latest_adv)
+    sleeves = _ensure_sleeves(db, str(acct["started_at"])[:10])
+    upcoming_dates = sorted(s["next_rebalance_date"] for s in sleeves if s.get("next_rebalance_date"))
+    next_rebal = upcoming_dates[0] if upcoming_dates else None
 
     for mp in marked_positions:
         mp["weight_pct"] = round((mp["market_value_inr"] / max(1.0, total_nav)) * 100.0, 2)
@@ -671,6 +798,7 @@ def get_paper_ledger_status(db: Database) -> dict[str, Any]:
 
     return {
         "initialized": True,
+        "strategy_id": STRATEGY_ID_EXECUTION,
         "as_of_date": latest_date,
         "account": {
             "started_at": acct["started_at"],
@@ -683,7 +811,7 @@ def get_paper_ledger_status(db: Database) -> dict[str, Any]:
             "drawdown_pct": round(cur_dd_pct, 2),
             "dd_brake_active": bool(acct.get("dd_brake_active", 0)),
             "equity_value_inr": round(equity_val, 2),
-            "cash_liquidcase_inr": round(cash_now, 2),
+            "cash_liquidcase_inr": round(cash_reserve_now, 2),
             "liquidcase_only_inr": round(liquidcase_now, 2),
             "goldbees_reserve_inr": round(goldbees_now, 2),
             "accrued_cash_interest_inr": round(accrued_cash_interest, 2),
@@ -696,10 +824,14 @@ def get_paper_ledger_status(db: Database) -> dict[str, Any]:
             "total_fees_inr": round(float(acct["total_fees_inr"]), 2),
             "est_stcg_tax_inr": round(float(acct["est_stcg_tax_inr"]), 2),
             "est_ltcg_tax_inr": round(float(acct.get("est_ltcg_tax_inr") or 0.0), 2),
-            "liquidation_net_nav_inr": round(cash_now + liq_est["net_after_liquidation_inr"], 2),
+            "liquidation_net_nav_inr": round(cash_reserve_now + liq_est["net_after_liquidation_inr"], 2),
+            "benchmark_symbol": bench_sym_used,
+            "benchmark_type": bench_type,
             "nifty_return_pct": round(bench_ret_pct, 2),
             "excess_vs_nifty_pct": round(total_return_pct - bench_ret_pct, 2),
+            "next_scheduled_rebalance_date": next_rebal,
         },
+        "sleeves": sleeves,
         "positions": marked_positions,
         "trades": trades,
     }
@@ -713,8 +845,9 @@ def commit_paper_rebalance(
     skip_earnings_blackout: bool = False,
     enforce_smart_money_shield: bool = True,
     allow_stale: bool = False,
+    weighting_mode: str = "hrp",
 ) -> dict[str, Any]:
-    """Execute and lock today's live V6 rebalance ticket with freshness guard & FIFO tax lots."""
+    """Execute and lock today's live V7 rebalance ticket into the SQLite Paper Ledger (FIFO lots + 4 sleeves)."""
     freshness = evaluate_data_freshness(db)
     if freshness["block_execution"] and not allow_stale:
         raise ValueError(
@@ -738,6 +871,7 @@ def commit_paper_rebalance(
         started_at = existing_acct["started_at"]
         initial_cap = float(existing_acct["initial_capital"])
         bench_entry = float(existing_acct["bench_entry_price"])
+        bench_tri_entry = existing_acct.get("bench_tri_entry_price") or latest_px.get(TRI_BENCHMARK_SYMBOL)
         prev_realized = float(existing_acct["realized_pnl_inr"])
         prev_fees = float(existing_acct["total_fees_inr"])
         prev_stcg = float(existing_acct["est_stcg_tax_inr"])
@@ -749,6 +883,7 @@ def commit_paper_rebalance(
         started_at = now_iso
         initial_cap = float(capital_inr)
         bench_entry = float(latest_px.get(BENCHMARK_SYMBOL, 25000.0))
+        bench_tri_entry = latest_px.get(TRI_BENCHMARK_SYMBOL)
         prev_realized = 0.0
         prev_fees = 0.0
         prev_stcg = 0.0
@@ -763,9 +898,20 @@ def commit_paper_rebalance(
         skip_earnings_blackout=skip_earnings_blackout,
         enforce_smart_money_shield=enforce_smart_money_shield,
         current_holdings=cur_holdings,
+        weighting_mode=weighting_mode,
     )
 
     fifo_ledger = _ensure_fifo_ledger(db, existing_acct, cur_holdings)
+    sleeves = _ensure_sleeves(db, latest_date[:10] if not existing_acct else str(started_at)[:10])
+
+    active_sleeve_id = 1
+    if existing_acct:
+        due = sorted(sleeves, key=lambda s: s.get("next_rebalance_date") or "9999-12-31")[0]
+        active_sleeve_id = int(due["sleeve_id"])
+        due["last_rebalance_date"] = latest_date[:10]
+        due["next_rebalance_date"] = add_nse_trading_days(latest_date[:10], 40)
+        due["status"] = "active"
+
     prev_pos_map = {p["symbol"]: p for p in cur_holdings}
     new_positions: list[dict[str, Any]] = []
     new_trades: list[dict[str, Any]] = []
@@ -780,7 +926,7 @@ def commit_paper_rebalance(
         if d_sh < 0:
             fifo_ledger.sell(sym, latest_date[:10], float(abs(d_sh)), px, sell_cost_inr=fee)
         elif d_sh > 0:
-            fifo_ledger.buy(sym, latest_date[:10], float(d_sh), px, buy_cost_inr=fee)
+            fifo_ledger.buy(sym, latest_date[:10], float(d_sh), px, buy_cost_inr=fee, sleeve_id=active_sleeve_id)
 
         if d_sh != 0:
             new_trades.append(
@@ -840,11 +986,12 @@ def commit_paper_rebalance(
         "stcl_carry_inr": fifo_ledger.stcl_carry_inr,
         "ltcl_carry_inr": fifo_ledger.ltcl_carry_inr,
         "bench_entry_price": bench_entry,
+        "bench_tri_entry_price": bench_tri_entry,
         "risk_profile": risk_profile.lower(),
         "top_k": top_k,
     }
     lots_out = [dict(l, created_at=now_iso) for l in fifo_ledger.export_lots()]
-    db.save_paper_rebalance(new_account, new_positions, new_trades, lots=lots_out)
+    db.save_paper_rebalance(new_account, new_positions, new_trades, lots=lots_out, sleeves=sleeves)
     if hasattr(db, "record_paper_nav"):
         db.record_paper_nav(
             {
@@ -856,6 +1003,7 @@ def commit_paper_rebalance(
                 "peak_nav_inr": new_peak,
                 "dd_pct": ((new_nav / max(1.0, new_peak)) - 1.0) * 100.0,
                 "dd_brake_active": bool(ticket["summary"]["dd_brake_active"]),
+                "bench_tri_price": latest_px.get(TRI_BENCHMARK_SYMBOL),
             }
         )
     return {"ticket": ticket, "ledger": get_paper_ledger_status(db)}

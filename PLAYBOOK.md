@@ -18,7 +18,7 @@
 * **3-Layer Crash Defense:**
   1. **6-Gauge Market Risk Gate** *(India VIX `≥ 19`, India VIX `≥ 23`, NIFTY `< 200-DMA`, NSE Breadth `< 42%`, 52W Hi-Lo `< -10%`, Gold/NIFTY 63D `> +14%`)* → scales equity exposure smoothly `100% → 85% → 55% → 25%`.
   2. **18% Annualized Volatility Cap** (60D rolling portfolio covariance).
-  3. **`-10%` Own-Portfolio Drawdown Brake:** Cuts equity exposure in half if portfolio drops `-10%` from peak; releases once recovered to `-5%`.
+  3. **`-10%` Own-Portfolio Drawdown Brake:** Cuts equity exposure in half if portfolio drops `-10.0%` from peak NAV; releases only once drawdown recovers past **`-6.0%`** AND portfolio equity closes above its 20D SMA (`× 1.005`) (matches `DRAWDOWN_BRAKE_TRIGGER = -0.10`, `DRAWDOWN_BRAKE_RELEASE = -0.06` in code).
 * **Defensive Reserve Split (`70 / 30`):**
   * Park idle / Risk-Gate cash **70% in `LIQUIDCASE`** *(Growth Liquid ETF — or an equity-taxed Arbitrage Fund; avoids `LIQUIDBEES` daily dividend ITR clutter)* and **30% in `GOLDBEES`**.
 
@@ -47,7 +47,7 @@
 ## 4. Exact Live Execution Routine
 1. **Sync Window:** Run **Sync & Retrain** strictly between **`6:30 PM – 11:00 PM IST`** on NSE trading days *(avoids Yahoo Finance's ~4 AM IST settlement rollback)*.
 2. **Rebalance Cadence:** Execute the **Trade Ticket** once every **10 trading days** (~every 2 weeks) for the active tranche. Ignore tiny 1–2 share micro-trims between scheduled rebalance dates.
-3. **Broker Execution:** Use limit orders near market open/close. Buy **`LIQUIDCASE`** (or an Arbitrage Fund) for the `70%` defensive cash slot and **`GOLDBEES`** for the `30%` gold slot.
+3. **Broker Execution (Harris Ch. 14 Optimal NSE Windows):** Use **limit orders** strictly inside NSE's highest-liquidity, tightest-spread windows — **`10:00–10:30 AM IST`** (after opening auction volatility subsides) or **`2:45–3:15 PM IST`** (pre-close institutional liquidity; avoid `9:15–9:45 AM` open whipsaws and `3:25–3:30 PM` closing print). Enforce `≤ 2.0%` of 20D ADV per single order (split larger orders across 2 sessions). Buy **`LIQUIDCASE`** (or an Arbitrage Fund) for the `70%` defensive cash slot and **`GOLDBEES`** for the `30%` gold slot.
 4. **Backup Habit:** After every logged paper rebalance, commit & push `data/equilens_india.db` (or an exported `paper_ledger.json`) to GitHub so VM timeouts never interrupt your track record.
 5. **Capital Ramp Plan:**
    * **Months 1–3:** Log live `₹10L` paper portfolio strictly (prove zero execution bugs & personal discipline).

@@ -534,10 +534,20 @@ def sync_universe(
         db.upsert_options_snapshot(sym, meta["options"])
         synced += 1
 
+    # Phase 2 Day-1 Immutable PIT Fundamental Snapshot Logger (zero lookahead)
+    pit_summary: dict[str, Any] = {}
+    try:
+        from .pit_fundamentals import snapshot_current_fundamentals
+
+        pit_summary = snapshot_current_fundamentals(db, as_of_date=now_iso[:10])
+    except Exception as exc:
+        logger.debug("PIT fundamental snapshot skipped: %s", exc)
+
     return {
         "synced_count": synced,
         "failed": failed,
         "macro_synced": macro_counts,
+        "pit_fundamentals": pit_summary,
         "updated_at": now_iso,
         "data_source": "NSE / Yahoo Finance (live)",
     }
