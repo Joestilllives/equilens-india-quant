@@ -35,6 +35,7 @@ from .config import (
     FX_MACRO_SYMBOL,
     GOLD_MACRO_SYMBOL,
     ML_HORIZON_DAYS,
+    NON_EQUITY_SYMBOLS,
     SP500_MACRO_SYMBOL,
     TB_DOWN_ATR_MULT,
     TB_HORIZON_DAYS,
@@ -237,7 +238,7 @@ def compute_current_macro_regime(db: Database) -> dict[str, Any]:
     near_lo = 0
     counted = 0
     for sym, bars in ohlcv_map.items():
-        if sym == BENCHMARK_SYMBOL or len(bars) < 50:
+        if sym in NON_EQUITY_SYMBOLS or len(bars) < 50:
             continue
         c = np.array([b["close"] for b in bars[-252:]], dtype=float)
         counted += 1
@@ -389,7 +390,7 @@ def _build_panel(
 
     all_frames: list[pd.DataFrame] = []
     for sym, bars in ohlcv_map.items():
-        if len(bars) < 80:
+        if sym in NON_EQUITY_SYMBOLS or len(bars) < 80:
             continue
         df = compute_indicator_frame(bars, bench_bars)
         df = df.merge(macro_lookup, on="date", how="left")
@@ -458,7 +459,7 @@ def _build_panel(
 
     full = pd.concat(all_frames, ignore_index=True)
 
-    stock_mask = full["symbol"] != BENCHMARK_SYMBOL
+    stock_mask = ~full["symbol"].isin(NON_EQUITY_SYMBOLS)
     breadth = full[stock_mask].groupby("date")["above_sma50"].mean().rename("nse_breadth_50d")
     full = full.merge(breadth.reset_index(), on="date", how="left")
     full["nse_breadth_50d"] = full["nse_breadth_50d"].fillna(0.5)
@@ -490,13 +491,13 @@ def _build_panel(
     full["target_alpha"] = (full["fwd_ret"] - full["bench_fwd_ret"]).clip(-0.45, 0.45)
     full["target_beat"] = (full["target_alpha"] > 0.0).astype(int)
 
-    # Latest row per symbol for live inference
-    latest_df = full.sort_values("date").groupby("symbol", as_index=False).last()
+    # Latest row per equity symbol for live inference (strictly excluding benchmark & reserve ETFs)
+    latest_df = full[~full["symbol"].isin(NON_EQUITY_SYMBOLS)].sort_values("date").groupby("symbol", as_index=False).last()
     for col in FEATURE_COLS:
         latest_df[col] = latest_df[col].replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
-    # Labeled training panel (excluding NIFTY 50 index itself)
-    panel = full[full["symbol"] != BENCHMARK_SYMBOL].dropna(
+    # Labeled training panel (strictly excluding benchmark & reserve ETFs)
+    panel = full[~full["symbol"].isin(NON_EQUITY_SYMBOLS)].dropna(
         subset=["target_alpha", "fwd_ret", "bench_fwd_ret", "tb_label", "sma200", "vol_252d", "fip_smooth_6m"]
     ).copy()
     panel["fwd_rank"] = panel.groupby("date")["target_alpha"].rank(pct=True)
@@ -758,8 +759,8 @@ def train_and_predict_universe(
         p_beat = float(np.clip(p_beat_arr[idx], 0.10, 0.90))
         p_tb = float(np.clip(p_tb_arr[idx], 0.10, 0.90))
 
-        if sym == BENCHMARK_SYMBOL:
-            alpha_pct, p_beat, p_tb = 0.0, 0.50, 0.50
+        if sym in NON_EQUITY_SYMBOLS:
+            continue
 
         exp_ret_h = nifty_base_h + (alpha_pct / 100.0)
         vol_ann = float(row["vol_252d"]) if pd.notna(row.get("vol_252d")) and row["vol_252d"] > 0 else 0.24

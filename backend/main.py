@@ -25,6 +25,7 @@ from .config import (
     DEFAULT_COST_BPS,
     FRONTEND_DIR,
     MARKET_REGION,
+    NON_EQUITY_SYMBOLS,
 )
 from .data_fetcher import sync_single_ticker, sync_universe
 from .data_health import evaluate_data_freshness, invalidate_freshness_cache
@@ -151,7 +152,7 @@ def get_shortlist(
         setup_filter=setup,
         include_benchmark=include_benchmark,
     )
-    sectors = sorted({it["sector"] for it in items if it["symbol"] != BENCHMARK_SYMBOL})
+    sectors = sorted({it["sector"] for it in items if it["symbol"] not in NON_EQUITY_SYMBOLS})
     ml_run = db.get_latest_ml_run()
     macro_regime = compute_current_macro_regime(db)
     alerts = db.get_alerts(limit=100)
@@ -348,7 +349,7 @@ def get_model_metrics() -> dict[str, Any]:
     if not run:
         raise HTTPException(status_code=404, detail="ML model has not been trained yet.")
     preds = sorted(
-        db.get_ml_predictions().values(),
+        (p for p in db.get_ml_predictions().values() if p["symbol"] not in NON_EQUITY_SYMBOLS),
         key=lambda p: (p.get("prob_tb_win", 50.0) * 0.6 + p["pred_alpha_20d"] * 4.0),
         reverse=True,
     )

@@ -8,7 +8,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from .config import BENCHMARK_SYMBOL
+from .config import BENCHMARK_SYMBOL, NON_EQUITY_SYMBOLS
 from .database import Database
 from .indicators import compute_indicator_frame, detect_chart_setups
 
@@ -452,7 +452,7 @@ def build_shortlist(
     base_snapshots = _compute_base_snapshots(db)
     results: list[dict[str, Any]] = []
     for snap in base_snapshots:
-        if not include_benchmark and snap["symbol"] == BENCHMARK_SYMBOL:
+        if not include_benchmark and snap["symbol"] in NON_EQUITY_SYMBOLS:
             continue
         if sector != "ALL" and snap["sector"] != sector:
             continue

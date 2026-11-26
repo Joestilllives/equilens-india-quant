@@ -114,3 +114,44 @@ def test_api_mutation_auth_cors_reset_confirm_and_safe_urls() -> None:
     app_js = (Path(__file__).resolve().parent.parent / "frontend" / "app.js").read_text(encoding="utf-8")
     assert "function safeExternalUrl(" in app_js
     assert not re.search(r'href="\$\{escHtml\(n\.url\)\}"', app_js)
+
+
+def test_non_equity_etfs_excluded_from_ml_shortlist_and_predictions(tmp_path) -> None:
+    """GOLDBEES.NS, NIFTYBEES.NS, and ^NSEI must never leak into ML panel, breadth, shortlist, or predictions."""
+    from backend.config import NON_EQUITY_SYMBOLS
+    from backend.ml_predictor import _build_panel, compute_current_macro_regime
+    from backend.shortlister import build_shortlist
+
+    tmp_db = tmp_path / "etf_hygiene.db"
+    shutil.copyfile(DB_PATH, tmp_db)
+    db = Database(tmp_db)
+
+    panel, latest_df = _build_panel(db)
+    assert set(panel["symbol"].unique()).isdisjoint(NON_EQUITY_SYMBOLS)
+    assert set(latest_df["symbol"].unique()).isdisjoint(NON_EQUITY_SYMBOLS)
+
+    macro = compute_current_macro_regime(db)
+    ohlcv_syms = set(db.get_all_ohlcv().keys())
+    expected_equity_count = len(ohlcv_syms - set(NON_EQUITY_SYMBOLS))
+    assert macro["universe_size"] <= expected_equity_count
+
+    shortlist = build_shortlist(db)
+    assert set(item["symbol"] for item in shortlist).isdisjoint(NON_EQUITY_SYMBOLS)
+
+    # save_ml_run must purge stale non-equity rows from ml_predictions
+    dummy_run = {
+        "trained_at": "2026-11-26T00:00:00Z",
+        "horizon_days": 40,
+        "sample_count": 100,
+        "symbol_count": 1,
+        "hit_rate": 50.0,
+        "ic_spearman": 0.05,
+        "top5_spread": 1.0,
+        "avg_top5_return": 2.0,
+        "avg_bench_return": 1.0,
+        "feature_importances": [],
+        "folds": [],
+    }
+    db.save_ml_run(dummy_run, predictions=[], oos_rows=None)
+    preds_after = db.get_ml_predictions()
+    assert set(preds_after.keys()).isdisjoint(NON_EQUITY_SYMBOLS)

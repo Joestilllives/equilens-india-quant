@@ -13,7 +13,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from .config import BENCHMARK_SYMBOL, DEFAULT_COST_BPS, FX_MACRO_SYMBOL, GOLD_MACRO_SYMBOL, GOLDBEES_SYMBOL
+from .config import BENCHMARK_SYMBOL, DEFAULT_COST_BPS, FX_MACRO_SYMBOL, GOLD_MACRO_SYMBOL, GOLDBEES_SYMBOL, NON_EQUITY_SYMBOLS
 from .data_health import build_clean_price_matrix, evaluate_data_freshness
 from .database import Database
 from .indian_costs import FifoTaxLedger, compute_indian_delivery_cost
@@ -162,7 +162,7 @@ def generate_rebalance_ticket(
     gate_exp = float(macro.get("target_exposure_pct", 100)) / 100.0
     vol_target = None if risk_profile.lower() == "growth" else 0.18
 
-    aux_excluded = {BENCHMARK_SYMBOL, "NIFTYBEES.NS", GOLDBEES_SYMBOL}
+    aux_excluded = set(NON_EQUITY_SYMBOLS)
     ranked_rows: list[dict[str, Any]] = []
     for sym, p in preds.items():
         if sym in aux_excluded or sym not in latest_px:

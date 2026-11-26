@@ -17,7 +17,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from .config import BENCHMARK_SYMBOL, DEFAULT_COST_BPS, FX_MACRO_SYMBOL, GOLD_MACRO_SYMBOL, VOL_INDEX_SYMBOL
+from .config import BENCHMARK_SYMBOL, DEFAULT_COST_BPS, FX_MACRO_SYMBOL, GOLD_MACRO_SYMBOL, NON_EQUITY_SYMBOLS, VOL_INDEX_SYMBOL
 from .database import Database
 
 INDIA_CASH_DAILY_YIELD = (1.062 ** (1.0 / 252.0)) - 1.0
@@ -266,7 +266,7 @@ def _simulate_single_tranche(
             for sym in day_slice["symbol"].tolist():
                 if len(chosen) >= top_k:
                     break
-                if sym in chosen or sym == BENCHMARK_SYMBOL or sym not in prices_df.columns or not _can_add(sym):
+                if sym in chosen or sym in NON_EQUITY_SYMBOLS or sym not in prices_df.columns or not _can_add(sym):
                     continue
                 _add(sym)
 
@@ -275,7 +275,7 @@ def _simulate_single_tranche(
                 for sym in day_slice["symbol"].tolist():
                     if len(chosen) >= top_k:
                         break
-                    if sym in chosen or sym == BENCHMARK_SYMBOL or sym not in prices_df.columns:
+                    if sym in chosen or sym in NON_EQUITY_SYMBOLS or sym not in prices_df.columns:
                         continue
                     chosen.append(sym)
 
@@ -367,7 +367,7 @@ def run_oos_portfolio_backtest(
     # Precompute 1Y rolling annualized volatility, NSE Breadth (>50D SMA), and NSE 52W Hi-Lo Sentiment
     log_rets_df = np.log(prices_df / prices_df.shift(1))
     vol_df = log_rets_df.rolling(252, min_periods=63).std() * np.sqrt(252)
-    stock_cols = [c for c in prices_df.columns if c != BENCHMARK_SYMBOL]
+    stock_cols = [c for c in prices_df.columns if c not in NON_EQUITY_SYMBOLS]
     sma50_df = prices_df[stock_cols].rolling(50, min_periods=30).mean()
     breadth_series = (prices_df[stock_cols] > sma50_df).mean(axis=1)
 
@@ -400,6 +400,7 @@ def run_oos_portfolio_backtest(
         gold_inr_ret_series = pd.Series(INDIA_CASH_DAILY_YIELD, index=prices_df.index)
 
     oos_df = pd.DataFrame(oos)
+    oos_df = oos_df[~oos_df["symbol"].isin(NON_EQUITY_SYMBOLS)].copy()
     oos_dates = sorted(set(oos_df["date"].unique()).intersection(set(prices_df.index)))
     if len(oos_dates) < 30:
         raise ValueError("Insufficient overlapping OOS trading dates for portfolio simulation.")

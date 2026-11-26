@@ -16,6 +16,7 @@ import pandas as pd
 
 from .config import (
     BENCHMARK_SYMBOL,
+    NON_EQUITY_SYMBOLS,
     DATA_FRESHNESS_MIN_COVERAGE,
     FX_MACRO_SYMBOL,
     GOLD_MACRO_SYMBOL,
@@ -121,7 +122,7 @@ def evaluate_data_freshness(
     else:
         warnings.append(f"Benchmark {BENCHMARK_SYMBOL} OHLCV history is missing.")
 
-    stock_syms = [s for s in ohlcv_latest if s != BENCHMARK_SYMBOL and not s.startswith("^")]
+    stock_syms = [s for s in ohlcv_latest if s not in NON_EQUITY_SYMBOLS and not s.startswith("^")]
     stale_symbols: list[str] = []
     fresh_count = 0
     if bench_latest and stock_syms:

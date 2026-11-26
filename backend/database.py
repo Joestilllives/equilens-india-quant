@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-from .config import DB_PATH
+from .config import DB_PATH, NON_EQUITY_SYMBOLS
 
 
 class Database:
@@ -765,6 +765,12 @@ class Database:
                     json.dumps(run.get("regime_stats", {})),
                 ),
             )
+            if NON_EQUITY_SYMBOLS:
+                placeholders = ",".join("?" for _ in NON_EQUITY_SYMBOLS)
+                conn.execute(
+                    f"DELETE FROM ml_predictions WHERE symbol IN ({placeholders})",
+                    tuple(s.upper() for s in NON_EQUITY_SYMBOLS),
+                )
             for p in predictions:
                 conn.execute(
                     """
