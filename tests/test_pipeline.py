@@ -192,7 +192,7 @@ def test_v6_execution_ticket_and_paper_ledger_lifecycle(tmp_path) -> None:
     db.reset_paper_account()
     assert get_paper_ledger_status(db)["initialized"] is False
 
-    res1 = commit_paper_rebalance(db, capital_inr=1_000_000.0, top_k=10, risk_profile="balanced")
+    res1 = commit_paper_rebalance(db, capital_inr=1_000_000.0, top_k=10, risk_profile="balanced", allow_stale=True)
     assert res1["ledger"]["initialized"] is True
     assert len(res1["ledger"]["positions"]) == 10
     assert len(res1["ledger"]["trades"]) == 10

@@ -23,7 +23,6 @@ class Database:
     def connect(self) -> Iterator[sqlite3.Connection]:
         conn = sqlite3.connect(str(self.db_path), timeout=30.0, check_same_thread=False)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA synchronous=NORMAL;")
         conn.execute("PRAGMA busy_timeout=15000;")
         try:
@@ -34,6 +33,7 @@ class Database:
 
     def init_schema(self) -> None:
         with self.connect() as conn:
+            conn.execute("PRAGMA journal_mode=WAL;")
             conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS tickers (
@@ -281,6 +281,29 @@ class Database:
                     price REAL NOT NULL DEFAULT 0.0,
                     value_cr REAL NOT NULL DEFAULT 0.0
                 );
+
+                CREATE TABLE IF NOT EXISTS paper_lots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    symbol TEXT NOT NULL,
+                    buy_date TEXT NOT NULL,
+                    shares_remaining REAL NOT NULL,
+                    unit_cost_inr REAL NOT NULL,
+                    sleeve_id INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_paper_lots_sym ON paper_lots (symbol, buy_date);
+
+                CREATE TABLE IF NOT EXISTS paper_nav_history (
+                    date TEXT PRIMARY KEY,
+                    nav_inr REAL NOT NULL,
+                    equity_inr REAL NOT NULL,
+                    liquidcase_inr REAL NOT NULL,
+                    goldbees_inr REAL NOT NULL,
+                    peak_nav_inr REAL NOT NULL,
+                    dd_pct REAL NOT NULL DEFAULT 0.0,
+                    dd_brake_active INTEGER NOT NULL DEFAULT 0
+                );
                 """
             )
             # Safe schema migrations if upgrading from v1 DB
@@ -292,6 +315,13 @@ class Database:
             self._ensure_column(conn, "ml_predictions", "target_price", "REAL")
             self._ensure_column(conn, "ml_predictions", "stop_price", "REAL")
             self._ensure_column(conn, "ml_predictions", "risk_reward", "REAL")
+            self._ensure_column(conn, "paper_account", "peak_nav_inr", "REAL")
+            self._ensure_column(conn, "paper_account", "dd_brake_active", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(conn, "paper_account", "liquidcase_inr", "REAL")
+            self._ensure_column(conn, "paper_account", "goldbees_inr", "REAL NOT NULL DEFAULT 0.0")
+            self._ensure_column(conn, "paper_account", "est_ltcg_tax_inr", "REAL NOT NULL DEFAULT 0.0")
+            self._ensure_column(conn, "paper_account", "stcl_carry_inr", "REAL NOT NULL DEFAULT 0.0")
+            self._ensure_column(conn, "paper_account", "ltcl_carry_inr", "REAL NOT NULL DEFAULT 0.0")
 
     @staticmethod
     def _ensure_column(conn: sqlite3.Connection, table: str, col: str, definition: str) -> None:
@@ -815,6 +845,23 @@ class Database:
             out[d["symbol"]] = d
         return out
 
+    def get_ml_prediction(self, symbol: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            r = conn.execute("SELECT * FROM ml_predictions WHERE symbol = ?", (symbol.upper(),)).fetchone()
+        if not r:
+            return None
+        d = dict(r)
+        d["cone"] = json.loads(d.pop("cone_json") or "[]")
+        return d
+
+    def get_ohlcv_tail(self, symbol: str, limit: int = 2) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT date, open, high, low, close, volume FROM ohlcv WHERE symbol = ? ORDER BY date DESC LIMIT ?",
+                (symbol.upper(), int(limit)),
+            ).fetchall()
+        return [dict(r) for r in reversed(rows)]
+
     def get_oos_history(self) -> list[dict[str, Any]]:
         with self.connect() as conn:
             rows = conn.execute("SELECT * FROM ml_oos_history ORDER BY date ASC, symbol ASC").fetchall()
@@ -960,6 +1007,7 @@ class Database:
         account: dict[str, Any],
         positions: list[dict[str, Any]],
         new_trades: list[dict[str, Any]],
+        lots: list[dict[str, Any]] | None = None,
     ) -> None:
         with self.connect() as conn:
             conn.execute(
@@ -967,8 +1015,10 @@ class Database:
                 INSERT OR REPLACE INTO paper_account (
                     id, started_at, last_rebalance_at, initial_capital, cash_inr,
                     realized_pnl_inr, total_fees_inr, est_stcg_tax_inr,
-                    bench_entry_price, risk_profile, top_k
-                ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    bench_entry_price, risk_profile, top_k,
+                    peak_nav_inr, dd_brake_active, liquidcase_inr, goldbees_inr,
+                    est_ltcg_tax_inr, stcl_carry_inr, ltcl_carry_inr
+                ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     account["started_at"],
@@ -981,6 +1031,13 @@ class Database:
                     float(account["bench_entry_price"]),
                     str(account["risk_profile"]),
                     int(account["top_k"]),
+                    float(account.get("peak_nav_inr", account["initial_capital"])),
+                    1 if account.get("dd_brake_active") else 0,
+                    float(account.get("liquidcase_inr", account["cash_inr"])),
+                    float(account.get("goldbees_inr", 0.0)),
+                    float(account.get("est_ltcg_tax_inr", 0.0)),
+                    float(account.get("stcl_carry_inr", 0.0)),
+                    float(account.get("ltcl_carry_inr", 0.0)),
                 ),
             )
             conn.execute("DELETE FROM paper_positions")
@@ -1028,12 +1085,76 @@ class Database:
                         for t in new_trades
                     ],
                 )
+            if lots is not None:
+                conn.execute("DELETE FROM paper_lots")
+                if lots:
+                    conn.executemany(
+                        """
+                        INSERT INTO paper_lots (
+                            symbol, buy_date, shares_remaining, unit_cost_inr, sleeve_id, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        [
+                            (
+                                l["symbol"],
+                                l["buy_date"],
+                                float(l["shares_remaining"]),
+                                float(l["unit_cost_inr"]),
+                                int(l.get("sleeve_id", 1)),
+                                str(l.get("created_at", account["last_rebalance_at"])),
+                            )
+                            for l in lots
+                        ],
+                    )
+
+    def get_paper_lots(self) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute("SELECT * FROM paper_lots ORDER BY buy_date ASC, id ASC").fetchall()
+        return [dict(r) for r in rows]
+
+    def record_paper_nav(self, snap: dict[str, Any]) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO paper_nav_history (
+                    date, nav_inr, equity_inr, liquidcase_inr, goldbees_inr,
+                    peak_nav_inr, dd_pct, dd_brake_active
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    snap["date"],
+                    float(snap["nav_inr"]),
+                    float(snap["equity_inr"]),
+                    float(snap["liquidcase_inr"]),
+                    float(snap["goldbees_inr"]),
+                    float(snap["peak_nav_inr"]),
+                    float(snap.get("dd_pct", 0.0)),
+                    1 if snap.get("dd_brake_active") else 0,
+                ),
+            )
+
+    def get_paper_nav_history(self, limit: int = 120) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute("SELECT * FROM paper_nav_history ORDER BY date ASC LIMIT ?", (limit,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_ohlcv_latest_dates(self) -> dict[str, str]:
+        with self.connect() as conn:
+            rows = conn.execute("SELECT symbol, MAX(date) AS max_date FROM ohlcv GROUP BY symbol").fetchall()
+        return {str(r["symbol"]): str(r["max_date"])[:10] for r in rows if r["max_date"]}
+
+    def get_macro_latest_dates(self) -> dict[str, str]:
+        with self.connect() as conn:
+            rows = conn.execute("SELECT symbol, MAX(date) AS max_date FROM macro_series GROUP BY symbol").fetchall()
+        return {str(r["symbol"]): str(r["max_date"])[:10] for r in rows if r["max_date"]}
 
     def reset_paper_account(self) -> None:
         with self.connect() as conn:
             conn.execute("DELETE FROM paper_account")
             conn.execute("DELETE FROM paper_positions")
             conn.execute("DELETE FROM paper_trades")
+            conn.execute("DELETE FROM paper_lots")
+            conn.execute("DELETE FROM paper_nav_history")
 
     # ------------------------------------------------------------------
     # Official NSE Institutional Money Signals (Delivery %, FII OI, Bulk/Block)

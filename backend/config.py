@@ -16,6 +16,14 @@ MARKET_REGION = "IN"
 CURRENCY_SYMBOL = "₹"
 BENCHMARK_SYMBOL = "^NSEI"
 BENCHMARK_LABEL = "NIFTY 50"
+GOLDBEES_SYMBOL = os.getenv("EQUILENS_GOLDBEES_SYMBOL", "GOLDBEES.NS")
+
+# Live Security & Data Freshness Safety Controls
+_raw_cors = os.getenv("EQUILENS_CORS_ORIGINS", "http://127.0.0.1:8000,http://localhost:8000")
+CORS_ORIGINS: list[str] = [o.strip() for o in _raw_cors.split(",") if o.strip()]
+API_TOKEN_ENV = os.getenv("EQUILENS_API_TOKEN", "").strip()
+MAX_STALE_TRADING_DAYS = int(os.getenv("EQUILENS_MAX_STALE_TRADING_DAYS", "2"))
+DATA_FRESHNESS_MIN_COVERAGE = float(os.getenv("EQUILENS_MIN_COVERAGE", "0.85"))
 VOL_INDEX_SYMBOL = "^INDIAVIX"
 FX_MACRO_SYMBOL = "INR=X"
 BRENT_MACRO_SYMBOL = "BZ=F"

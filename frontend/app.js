@@ -80,8 +80,29 @@
     toastTimer = setTimeout(() => el.classList.remove('show'), duration);
   }
 
+  function getApiToken() {
+    const meta = document.querySelector('meta[name="equilens-token"]');
+    return meta ? meta.getAttribute('content') || '' : '';
+  }
+
+  function safeExternalUrl(raw) {
+    if (!raw || typeof raw !== 'string') return null;
+    try {
+      const u = new URL(raw.trim());
+      return (u.protocol === 'https:' || u.protocol === 'http:') ? u.href : null;
+    } catch {
+      return null;
+    }
+  }
+
   async function apiFetch(url, options = {}) {
-    const res = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...options });
+    const method = (options.method || 'GET').toUpperCase();
+    const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
+    if (method !== 'GET' && method !== 'HEAD') {
+      const tok = getApiToken();
+      if (tok) headers['X-EquiLens-Token'] = tok;
+    }
+    const res = await fetch(url, { ...options, headers });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.detail || `Request failed (${res.status})`);
     return data;
@@ -500,12 +521,13 @@
     document.getElementById('det-news-list').innerHTML = news.length ? news.map((n) => {
       const bCls = n.sentiment_label === 'Bullish' ? 'badge-up' : n.sentiment_label === 'Bearish' ? 'badge-down' : 'badge-neutral';
       const cTags = (n.catalyst_tags || []).map((tg) => `<span class="badge badge-accent">${escHtml(tg)}</span>`).join(' ');
+      const safeUrl = safeExternalUrl(n.url);
       return `<div class="news-item">
         <div class="news-meta">
           <span>${escHtml(n.publisher || 'News')} &middot; ${escHtml((n.published_at || '').slice(0, 10))}</span>
           <span class="pill-group" style="gap:4px;">${cTags}<span class="badge ${bCls}">${escHtml(n.sentiment_label)}</span></span>
         </div>
-        ${n.url ? `<a class="news-title" href="${escHtml(n.url)}" target="_blank" rel="noopener noreferrer">${escHtml(n.title)}</a>` : `<div class="news-title">${escHtml(n.title)}</div>`}
+        ${safeUrl ? `<a class="news-title" href="${escHtml(safeUrl)}" target="_blank" rel="noopener noreferrer">${escHtml(n.title)}</a>` : `<div class="news-title">${escHtml(n.title)}</div>`}
       </div>`;
     }).join('') : '<div class="text-muted" style="font-size:12px;">No recent headlines.</div>';
 
@@ -1323,7 +1345,11 @@
       }
     });
     document.getElementById('btn-reset-paper').addEventListener('click', async () => {
-      const res = await apiFetch('/api/execution/paper/reset', { method: 'POST' });
+      if (!window.confirm('Reset the forward-proof paper-trading ledger and erase all recorded paper positions & trades?')) return;
+      const res = await apiFetch('/api/execution/paper/reset', {
+        method: 'POST',
+        body: JSON.stringify({ confirm: true }),
+      });
       state.paperLedger = res.ledger;
       renderPaperLedger();
       await loadExecutionTicket();

@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 from backend.backtester import run_backtest
 from backend.catalyst_nlp import analyze_financial_news
 from backend.indicators import compute_indicator_frame
-from backend.main import app, db as live_db
+from backend.main import SESSION_API_TOKEN, app, db as live_db
 from backend.ml_predictor import compute_triple_barrier_labels
 from backend.stress_tester import run_quantitative_stress_tests
 
@@ -147,7 +147,7 @@ def test_api_edge_cases_and_security() -> None:
     assert len(r_zero.json()["items"]) >= 45
 
     for bad in ["'; DROP TABLE tickers;--", "!!!BAD!!!", "TOO_LONG_TICKER_NAME_999"]:
-        r_bad = client.post("/api/tickers/add", json={"symbol": bad})
+        r_bad = client.post("/api/tickers/add", json={"symbol": bad}, headers={"X-EquiLens-Token": SESSION_API_TOKEN})
         assert r_bad.status_code == 400
 
     assert client.get("/api/stock/NOTAREALNSE99.NS").status_code == 404
