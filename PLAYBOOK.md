@@ -129,3 +129,11 @@
 | **Global Dollar / US-10Y Squeeze (`DX-Y.NYB`, `^TNX`)** | Hélène Rey (2015) *Global Financial Cycle* | Zero predictive power on India `2017–2026` (`p > 0.85`); post-2017 `₹25,000+ Cr/mo` domestic SIP flows decoupled India from classic EM USD squeezes. |
 | **Double-Orthogonalized Amihud Illiquidity** | Amihud (2002) | Looked positive on surviving stocks (`+0.0339`), but collapsed to **`-0.0050 IC (t=-0.40)` on the 17 Fallen Angels** — proven survivorship trap (picked distressed illiquid blowups). |
 | **EWMA(0.94) / 21D Fast Vol Target, `GOLDBEES` TSMOM (45/15), Brent Mean-Reversion** | Fast vol targeting & macro trend | Hurt Calmar/MaxDD or had `t = -0.56` OOS noise (`2021–2026`); pruned for parsimony. |
+
+### 7.5 Final Frozen `V7` Sign-Off Audit (`audit_overfitting_v6.py --weighting hrp --perms 50`)
+- **Automated Suite & Live APIs:** **`27 / 27` pytest passed** (`48` concurrent API reqs: `100% HTTP 200`, `p50=85.9ms`, `p95=759.1ms`); all live GET endpoints `200 OK`, unauthenticated `POST` blocked (`401`), `0` ETF leaks, live `₹10,10,032.98` paper ledger (`10` positions, `4` sleeves, `10` FIFO lots, `130` Day-1 PIT snapshots).
+- **2-Factor Pure Alpha:** **`+8.24%/yr` (`t = +2.18`)** (`beta_mkt = 0.49`, `beta_size = 0.72`); **IIMA 4-Factor Indian Alpha:** **`+7.05%` to `+8.53%/yr`**.
+- **Calendar Years (`5/6` beat `NIFTYBEES` TRI):** `2021: +38.2%` · `2022: +14.8%` · `2023: +56.1%` · `2024: +36.0%` · `2025: +0.5%` · `2026 YTD: -1.2%` *(vs NIFTY TRI `-10.6%`)* — worst calendar-year MaxDD `-8.91%`.
+- **Matched 4-Tranche Top-10 Permutation Null Test (`N = 50`):** Random selection + identical `V7` risk shields averaged `+14.52%` CAGR (`SR 0.78`) vs actual `V7` **`+26.48%` (`SR 1.48`, beat `50/50` random runs, `p = 0.0196`)** → **`+11.96%/yr` pure stock-selection skill**.
+- **Corrected Bailey–López de Prado DSR (`std_trials = 0.313`, `6.2%` RF):** `N=25: 97.05%` · **`N=50: 95.49%`** · `N=100: 93.56%` *(at `0%` RF: `N=100: 99.55%`)*.
+- **12-Cell Parameter Plateau (`K ∈ {6,8,10,12} × Reb ∈ {30,40,60}`):** Every single cell earned `+23.61%` to `+30.98%` CAGR and `1.39` to `1.62` Excess Sharpe (zero cliff). **Status: FROZEN FOR LIVE PAPER TRACKING.**
