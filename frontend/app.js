@@ -190,6 +190,7 @@
     state.benchmark = data.benchmark;
     state.macroRegime = data.macro_regime;
     state.mlSummary = data.ml_summary;
+    state.dataFreshness = data.data_freshness || null;
 
     const ab = document.getElementById('tab-alert-badge');
     if (data.unread_alerts > 0) {
@@ -297,7 +298,12 @@
       parts.push(`<span>${b.as_of}</span>`);
     }
     if (state.mlSummary) {
-      parts.push(`<span>OOS 20D Hit: <strong>${state.mlSummary.hit_rate}%</strong></span>`);
+      parts.push(`<span>OOS 40D Hit: <strong>${state.mlSummary.hit_rate}%</strong></span>`);
+    }
+    if (state.dataFreshness) {
+      const st = state.dataFreshness.status || 'healthy';
+      const cls = st === 'healthy' ? 'badge-up' : st === 'degraded' ? 'badge-warn' : 'badge-down';
+      parts.push(`<span class="badge ${cls}" title="${escHtml((state.dataFreshness.warnings || []).join(' | ') || 'Market data fresh')}">Data: ${escHtml(st.toUpperCase())}</span>`);
     }
     document.getElementById('bench-strip').innerHTML = parts.join(' &middot; ');
 
@@ -336,7 +342,7 @@
     if (state.mlSummary) {
       document.getElementById('ml-badge-strip').innerHTML = `
         <span class="badge badge-neutral">IC: ${state.mlSummary.ic_spearman.toFixed(3)}</span>
-        <span class="badge ${state.mlSummary.top5_spread >= 0 ? 'badge-up' : 'badge-warn'}">OOS 20D Spread: ${fmtPct(state.mlSummary.top5_spread)}</span>
+        <span class="badge ${state.mlSummary.top5_spread >= 0 ? 'badge-up' : 'badge-warn'}">OOS 40D Spread: ${fmtPct(state.mlSummary.top5_spread)}</span>
       `;
     }
 
@@ -437,8 +443,8 @@
       ['Triple-Barrier Win Prob', `<strong class="${ml.prob_tb_win >= 55 ? 'text-up' : ''}">${ml.prob_tb_win.toFixed(1)}%</strong>`],
       ['ATR Profit Target (+2.5×)', `<strong class="text-up">${fmtPrice(ml.target_price)}</strong>`],
       ['ATR Stop-Loss (-1.5×)', `<strong class="text-down">${fmtPrice(ml.stop_price)}</strong> (${ml.risk_reward}R)`],
-      ['20D ML Alpha vs NIFTY 50', `<strong class="${ml.pred_alpha_20d >= 0 ? 'text-up' : 'text-down'}">${fmtPct(ml.pred_alpha_20d)}</strong>`],
-      ['P(Beat NIFTY 50 in 20D)', `<strong>${ml.prob_outperform.toFixed(1)}%</strong>`],
+      ['40D ML Alpha vs NIFTY TRI', `<strong class="${(ml.pred_alpha_40d ?? ml.pred_alpha_20d) >= 0 ? 'text-up' : 'text-down'}">${fmtPct(ml.pred_alpha_40d ?? ml.pred_alpha_20d)}</strong>`],
+      ['P(Beat NIFTY TRI in 40D)', `<strong>${ml.prob_outperform.toFixed(1)}%</strong>`],
       ['60D P50 / Range', c60 ? `<strong>${fmtPrice(c60.p50)}</strong> (${fmtPrice(c60.p10)}–${fmtPrice(c60.p90)})` : '--'],
     ].map(([k, v]) => `<div class="kv-row"><span class="text-muted">${k}</span><span>${v}</span></div>`).join('') : '<div class="text-muted">No ML forecast yet.</div>';
 
@@ -464,9 +470,9 @@
       ? d.setups.map((s) => `<span class="badge ${s.tone === 'bullish' ? 'badge-up' : s.tone === 'warning' ? 'badge-warn' : 'badge-neutral'}" title="${escHtml(s.detail)}">${escHtml(s.label)}</span>`).join('')
       : `<span class="text-muted" style="font-size:12px;">No special setup triggered today.</span>`;
 
-    // Shareholding (Promoter / Institutional) + Quarterly Results
+    // Shareholding (Yahoo Insider Proxy / Institutional) + Quarterly Results
     document.getElementById('det-ownership-box').innerHTML = [
-      ['Promoter / Insider Holding', fund.promoter_held_pct !== null && fund.promoter_held_pct !== undefined ? `<strong>${fund.promoter_held_pct.toFixed(1)}%</strong>` : '--'],
+      ['Insider Holding (Yahoo Proxy)', fund.promoter_held_pct !== null && fund.promoter_held_pct !== undefined ? `<strong>${fund.promoter_held_pct.toFixed(1)}%</strong>` : '--'],
       ['FII / DII Institutional Holding', fund.institution_held_pct !== null && fund.institution_held_pct !== undefined ? `<strong>${fund.institution_held_pct.toFixed(1)}%</strong>` : '--'],
       ['20D Volatility / ATR %', `<strong>${st.vol_20d_pct ?? '--'}%</strong> / ${st.atr_pct ?? '--'}%`],
     ].map(([k, v]) => `<div class="kv-row"><span class="text-muted">${k}</span><span>${v}</span></div>`).join('');
@@ -489,7 +495,7 @@
     const ins = d.insiders || [];
     document.getElementById('det-insiders-box').innerHTML = ins.length ? `
       <table class="data-table tabular">
-        <thead><tr><th>Date</th><th>Insider / Promoter</th><th>Type</th><th class="num">Shares / Value</th></tr></thead>
+        <thead><tr><th>Date</th><th>Insider (Yahoo Feed)</th><th>Type</th><th class="num">Shares / Value</th></tr></thead>
         <tbody>${ins.slice(0, 10).map((r) => `
           <tr>
             <td class="text-muted">${escHtml(r.trade_date)}</td>
@@ -499,7 +505,7 @@
           </tr>
         `).join('')}</tbody>
       </table>
-    ` : '<div class="text-muted" style="font-size:12px;">No recent NSE/SEBI insider filings parsed for this stock.</div>';
+    ` : '<div class="text-muted" style="font-size:12px;">No recent Yahoo Finance insider rows parsed for this stock (unverified vs SEBI SAST).</div>';
 
     const tUp = fund.analyst_target && st.close ? ((fund.analyst_target / st.close) - 1) * 100 : null;
     document.getElementById('det-fundamentals').innerHTML = [
@@ -746,8 +752,8 @@
 
     document.getElementById('ml-kpi-grid').innerHTML = [
       ['Triple-Barrier ROC-AUC', run.tb_auc.toFixed(3), `Top-5 TB Precision: ${run.tb_top5_precision}%`, run.tb_auc >= 0.52 ? 'text-up' : ''],
-      ['Top-5 vs NIFTY 20D Spread', fmtPct(run.top5_spread), `Top-5 ${fmtPct(run.avg_top5_return)} vs NIFTY ${fmtPct(run.avg_bench_return)}`, run.top5_spread >= 0 ? 'text-up' : 'text-down'],
-      ['OOS 20D Hit Rate', `${run.hit_rate.toFixed(1)}%`, 'Rebalance cohorts beating NIFTY 50', run.hit_rate >= 50 ? 'text-up' : 'text-warn'],
+      ['Top-8 vs NIFTY 40D Spread', fmtPct(run.top5_spread), `Top-8 ${fmtPct(run.avg_top5_return)} vs Benchmark ${fmtPct(run.avg_bench_return)}`, run.top5_spread >= 0 ? 'text-up' : 'text-down'],
+      ['OOS 40D Hit Rate', `${run.hit_rate.toFixed(1)}%`, 'Non-overlapping 40D cohorts beating benchmark', run.hit_rate >= 50 ? 'text-up' : 'text-warn'],
       ['Spearman Rank IC', run.ic_spearman.toFixed(3), '5 expanding folds · 25D embargo', run.ic_spearman > 0 ? 'text-up' : ''],
     ].map(([l, v, n, c]) => `<div class="kpi-card"><div class="kpi-label">${l}</div><div class="kpi-value ${c}">${v}</div><div class="kpi-note">${n}</div></div>`).join('');
 
@@ -896,9 +902,9 @@
 
     document.getElementById('journal-kpi-grid').innerHTML = [
       ['Logged / Graded Picks', `${s.total_logged} / ${s.graded_count}`, 'Live snapshots + monthly OOS cohorts', ''],
-      ['Avg 20D Pick Return', fmtPct(s.avg_20d_return_pct), `NIFTY 50 avg 20D: ${fmtPct(s.avg_spy_20d_pct)}`, s.avg_20d_return_pct >= 0 ? 'text-up' : 'text-down'],
-      ['Positive 20D Win Rate', `${s.win_rate_positive_pct.toFixed(1)}%`, 'NSE picks finishing green after 20D', s.win_rate_positive_pct >= 55 ? 'text-up' : ''],
-      ['Beat NIFTY 50 Rate', `${s.beat_spy_rate_pct.toFixed(1)}%`, 'Picks outperforming NIFTY 50 over 20D', s.beat_spy_rate_pct >= 50 ? 'text-up' : 'text-warn'],
+      ['Avg 40D Pick Return', fmtPct(s.avg_40d_return_pct ?? s.avg_20d_return_pct), `Benchmark avg 40D: ${fmtPct(s.avg_bench_40d_pct ?? s.avg_spy_20d_pct)}`, (s.avg_40d_return_pct ?? s.avg_20d_return_pct) >= 0 ? 'text-up' : 'text-down'],
+      ['Positive 40D Win Rate', `${s.win_rate_positive_pct.toFixed(1)}%`, 'NSE picks finishing green after 40D', s.win_rate_positive_pct >= 55 ? 'text-up' : ''],
+      ['Beat Benchmark Rate', `${s.beat_spy_rate_pct.toFixed(1)}%`, 'Picks outperforming NIFTY TRI over 40D', s.beat_spy_rate_pct >= 50 ? 'text-up' : 'text-warn'],
     ].map(([l, v, n, c]) => `<div class="kpi-card"><div class="kpi-label">${l}</div><div class="kpi-value ${c}">${v}</div><div class="kpi-note">${n}</div></div>`).join('');
 
     document.getElementById('journal-cal-body').innerHTML = (j.calibration || []).map((b) => `

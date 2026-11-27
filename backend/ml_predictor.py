@@ -688,6 +688,40 @@ def _mean_daily_cs_auc(df: pd.DataFrame, label_col: str, prob_col: str) -> float
         return 0.5
 
 
+def compute_afml_uniqueness_weights(
+    dates: pd.Series | np.ndarray,
+    symbols: pd.Series | np.ndarray,
+    horizon: int = ML_HORIZON_DAYS,
+) -> np.ndarray:
+    """
+    López de Prado (2018, AFML Ch. 4) Average Label Uniqueness Sample Weights utility
+    (opt-in research helper; default V7 training keeps standard equal weights).
+    """
+    n = len(dates)
+    if n == 0:
+        return np.array([], dtype=float)
+    dt_arr = np.asarray(dates)
+    sym_arr = np.asarray(symbols)
+    uniq_dates, inv_dt = np.unique(dt_arr, return_inverse=True)
+    n_dt = len(uniq_dates)
+    if n_dt <= 1:
+        return np.ones(n, dtype=float)
+    counts_per_day = np.bincount(inv_dt, minlength=n_dt).astype(float)
+    csum = np.concatenate([[0.0], np.cumsum(counts_per_day)])
+    starts = np.maximum(0, np.arange(n_dt) - horizon + 1)
+    conc_per_day = np.maximum(1.0, csum[np.arange(n_dt) + 1] - csum[starts])
+    inv_conc = 1.0 / conc_per_day
+    ic_sum = np.concatenate([[0.0], np.cumsum(inv_conc)])
+    ends = np.minimum(n_dt, np.arange(n_dt) + horizon)
+    span = np.maximum(1.0, (ends - np.arange(n_dt)).astype(float))
+    avg_u_by_day = (ic_sum[ends] - ic_sum[np.arange(n_dt)]) / span
+    _, inv_sym, sym_cnts = np.unique(sym_arr, return_inverse=True, return_counts=True)
+    sym_w = np.clip(np.median(sym_cnts) / np.maximum(1.0, sym_cnts[inv_sym]), 0.5, 1.5)
+    w = avg_u_by_day[inv_dt] * sym_w
+    w_mean = float(np.mean(w))
+    return (w / w_mean) if (np.isfinite(w_mean) and w_mean > 1e-12) else np.ones(n, dtype=float)
+
+
 def _fit_r4_ensemble(
     X: np.ndarray,
     y_rank: np.ndarray,

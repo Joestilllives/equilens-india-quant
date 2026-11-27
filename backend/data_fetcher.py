@@ -14,7 +14,14 @@ import pandas as pd
 import yfinance as yf
 
 from .catalyst_nlp import analyze_financial_news
-from .config import DEFAULT_STARRED, DEFAULT_UNIVERSE, HISTORY_PERIOD, MACRO_SYMBOLS
+from .config import (
+    DEFAULT_STARRED,
+    DEFAULT_UNIVERSE,
+    GOLDBEES_SYMBOL,
+    HISTORY_PERIOD,
+    MACRO_SYMBOLS,
+    TRI_BENCHMARK_SYMBOL,
+)
 from .database import Database
 
 logger = logging.getLogger(__name__)
@@ -443,8 +450,11 @@ def sync_universe(
     symbols: list[str] | None = None,
     period: str = HISTORY_PERIOD,
 ) -> dict[str, Any]:
-    """Batch-sync 5Y NSE NIFTY 50 OHLCV, India VIX & USD/INR, fundamentals, earnings, insiders & news."""
+    """Batch-sync 10Y NSE OHLCV (+ NIFTYBEES TRI & GOLDBEES reserve ETFs), India VIX & macro, fundamentals, earnings, insiders & news."""
     target_symbols = [s.upper() for s in (symbols or DEFAULT_UNIVERSE)]
+    for aux_etf in (TRI_BENCHMARK_SYMBOL, GOLDBEES_SYMBOL):
+        if aux_etf and aux_etf.upper() not in target_symbols:
+            target_symbols.append(aux_etf.upper())
     now_iso = datetime.now(timezone.utc).isoformat()
 
     macro_counts = sync_macro_series(db, period=period)

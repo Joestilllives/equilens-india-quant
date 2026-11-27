@@ -175,9 +175,11 @@ def get_shortlist(
         "sectors": sectors,
         "benchmark": bench_summary,
         "macro_regime": macro_regime,
+        "data_freshness": evaluate_data_freshness(db),
         "unread_alerts": sum(1 for a in alerts if not a["acknowledged"]),
         "ml_summary": {
             "trained_at": ml_run["trained_at"],
+            "model_version": ml_run.get("model_version", "v7"),
             "horizon_days": ml_run["horizon_days"],
             "hit_rate": ml_run["hit_rate"],
             "ic_spearman": ml_run["ic_spearman"],

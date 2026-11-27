@@ -8,7 +8,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from .config import BENCHMARK_SYMBOL, NON_EQUITY_SYMBOLS
+from .config import BENCHMARK_SYMBOL, BENCHMARK_TRI_SYMBOL, GOLDBEES_SYMBOL, STRATEGY_ID_SHORTLIST
 from .database import Database
 from .indicators import compute_indicator_frame, detect_chart_setups
 
@@ -80,7 +80,7 @@ def _summarize_insiders(insiders: list[dict[str, Any]]) -> dict[str, Any]:
 def _score_ml_alpha(pred: dict[str, Any] | None) -> float:
     if not pred:
         return 50.0
-    alpha = float(pred.get("pred_alpha_20d", 0.0))
+    alpha = float(pred.get("pred_alpha_40d", pred.get("pred_alpha_20d", 0.0)))
     prob_beat = float(pred.get("prob_outperform", 50.0))
     prob_tb = float(pred.get("prob_tb_win", 50.0))
     s_alpha = _clamp(50.0 + alpha * 6.5, 5.0, 98.0)
@@ -115,7 +115,91 @@ def _score_momentum(last: pd.Series) -> float:
     return round(_clamp(score), 1)
 
 
-def _score_valuation(fund: dict[str, Any], last_price: float) -> float:
+def _is_financial_sector(sector: str) -> bool:
+    s = (sector or "").lower()
+    return "financial" in s or "bank" in s
+
+
+def _build_sector_percentile_tables(
+    tickers: list[dict[str, Any]],
+    last_prices: dict[str, float],
+    earn_summaries: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, float]]:
+    """Compute within-NSE-sector percentile ranks for Valuation and Quality pillars.
+
+    Accounts for structural industry differences (e.g., skips FCF yield and gross margin
+    for Financial Services / Banks; normalizes P/E, ROE, margins within each NSE sector,
+    falling back to universe-wide percentiles only for sectors with < 4 peers).
+    """
+    aux_excluded = {BENCHMARK_SYMBOL, BENCHMARK_TRI_SYMBOL, GOLDBEES_SYMBOL}
+    rows: list[dict[str, Any]] = []
+    for t in tickers:
+        sym = t["symbol"]
+        if sym in aux_excluded or sym not in last_prices:
+            continue
+        fund = t.get("fundamentals") or {}
+        sec = t.get("sector") or "Unknown"
+        px = last_prices[sym]
+        is_fin = _is_financial_sector(sec)
+        target = fund.get("analyst_target")
+        upside = (((float(target) / px) - 1.0) * 100.0) if (target and float(target) > 0 and px > 0) else np.nan
+        fwd_pe = float(fund["forward_pe"]) if (fund.get("forward_pe") and float(fund["forward_pe"]) > 0) else np.nan
+        peg = float(fund["peg_ratio"]) if (fund.get("peg_ratio") and float(fund["peg_ratio"]) > 0) else np.nan
+        fcf_y = np.nan if is_fin else (float(fund["fcf_yield_pct"]) if fund.get("fcf_yield_pct") is not None else np.nan)
+        rev_g = float(fund["revenue_growth_pct"]) if fund.get("revenue_growth_pct") is not None else np.nan
+        gm = np.nan if is_fin else (float(fund["gross_margin_pct"]) if fund.get("gross_margin_pct") is not None else np.nan)
+        om = float(fund["operating_margin_pct"]) if fund.get("operating_margin_pct") is not None else np.nan
+        roe = float(fund["roe_pct"]) if fund.get("roe_pct") is not None else np.nan
+        surp = earn_summaries.get(sym, {}).get("avg_4q_surprise_pct")
+        rows.append(
+            {
+                "symbol": sym,
+                "sector": sec,
+                "neg_fwd_pe": -fwd_pe if np.isfinite(fwd_pe) else np.nan,
+                "neg_peg": -peg if np.isfinite(peg) else np.nan,
+                "fcf_y": fcf_y,
+                "upside": upside,
+                "rev_g": rev_g,
+                "gm": gm,
+                "om": om,
+                "roe": roe,
+                "surp": float(surp) if surp is not None else np.nan,
+            }
+        )
+
+    if not rows:
+        return {}
+
+    df = pd.DataFrame(rows)
+    sec_counts = df["sector"].value_counts().to_dict()
+
+    def _sector_pct(col: str) -> pd.Series:
+        univ_pct = df[col].rank(pct=True) * 100.0
+        sec_pct = df.groupby("sector")[col].rank(pct=True) * 100.0
+        # Use within-sector rank when sector has >= 4 valid peers, else universe rank
+        sec_valid = df.groupby("sector")[col].transform(lambda s: s.notna().sum())
+        use_sec = (df["sector"].map(sec_counts) >= 4) & (sec_valid >= 4)
+        return np.where(use_sec, sec_pct, univ_pct)
+
+    val_cols = ["neg_fwd_pe", "neg_peg", "fcf_y", "upside"]
+    qual_cols = ["rev_g", "gm", "om", "roe", "surp"]
+    for c in val_cols + qual_cols:
+        df[f"p_{c}"] = _sector_pct(c)
+
+    out: dict[str, dict[str, float]] = {}
+    for _, r in df.iterrows():
+        v_vals = [float(r[f"p_{c}"]) for c in val_cols if pd.notna(r[f"p_{c}"])]
+        q_vals = [float(r[f"p_{c}"]) for c in qual_cols if pd.notna(r[f"p_{c}"])]
+        out[str(r["symbol"])] = {
+            "valuation": round(_clamp(float(np.mean(v_vals)), 10.0, 96.0), 1) if v_vals else 50.0,
+            "quality": round(_clamp(float(np.mean(q_vals)), 10.0, 96.0), 1) if q_vals else 50.0,
+        }
+    return out
+
+
+def _score_valuation(fund: dict[str, Any], last_price: float, sector_scores: dict[str, float] | None = None) -> float:
+    if sector_scores is not None:
+        return sector_scores["valuation"]
     parts: list[float] = []
     fwd_pe = fund.get("forward_pe")
     if fwd_pe is not None and fwd_pe > 0:
@@ -133,7 +217,9 @@ def _score_valuation(fund: dict[str, Any], last_price: float) -> float:
     return round(float(np.mean(parts)), 1) if parts else 50.0
 
 
-def _score_quality(fund: dict[str, Any], earn_sum: dict[str, Any]) -> float:
+def _score_quality(fund: dict[str, Any], earn_sum: dict[str, Any], sector_scores: dict[str, float] | None = None) -> float:
+    if sector_scores is not None:
+        return sector_scores["quality"]
     parts: list[float] = []
     rev_g = fund.get("revenue_growth_pct")
     if rev_g is not None:
@@ -147,7 +233,6 @@ def _score_quality(fund: dict[str, Any], earn_sum: dict[str, Any]) -> float:
     roe = fund.get("roe_pct")
     if roe is not None:
         parts.append(_clamp(25.0 + roe * 1.4, 10.0, 96.0))
-    # PEAD Earnings Surprise bonus
     avg_surp = earn_sum.get("avg_4q_surprise_pct")
     if avg_surp is not None:
         parts.append(_clamp(52.0 + avg_surp * 3.5 + earn_sum.get("beat_streak", 0) * 4.0, 15.0, 98.0))
@@ -208,15 +293,15 @@ def _explain_stock(
 
     if pred:
         tb_p = float(pred.get("prob_tb_win", 50.0))
-        alpha = float(pred.get("pred_alpha_20d", 0.0))
+        alpha = float(pred.get("pred_alpha_40d", pred.get("pred_alpha_20d", 0.0)))
         if alpha >= 1.5 or tb_p >= 58.0:
-            drivers.append(f"V6 Quant ML signals {alpha:+.1f}% 40D alpha vs NIFTY 50 ({tb_p:.0f}% odds of hitting +2.0×ATR before -2.0×ATR)")
+            drivers.append(f"V6 Quant ML signals {alpha:+.1f}% 40D alpha vs NIFTY TRI ({tb_p:.0f}% calibrated odds of +2.0×ATR before -2.0×ATR)")
         elif alpha <= -1.2 or tb_p <= 44.0:
-            risks.append(f"ML model signals weak 40D payoff odds ({alpha:+.1f}% 40D alpha vs NIFTY 50, {tb_p:.0f}% symmetric TB win)")
+            risks.append(f"ML model signals weak 40D payoff odds ({alpha:+.1f}% 40D alpha vs NIFTY TRI, {tb_p:.0f}% calibrated TB win)")
 
     if insider_sum.get("cluster_buy"):
         drivers.append(
-            f"Promoter / Insider buying: {insider_sum['buys_90d']} open-market purchase(s) (₹{insider_sum['buy_value_90d']:,.0f}) in 90D"
+            f"Yahoo insider proxy: {insider_sum['buys_90d']} purchase(s) (₹{insider_sum['buy_value_90d']:,.0f}) in 90D (unverified vs SEBI SAST)"
         )
 
     if earn_sum.get("beat_streak", 0) >= 3 and (earn_sum.get("avg_4q_surprise_pct") or 0) > 2.0:
@@ -301,6 +386,10 @@ def _compute_base_snapshots(db: Database) -> list[dict[str, Any]]:
     options_map = db.get_all_options_snapshots()
     bench_bars = ohlcv_map.get(BENCHMARK_SYMBOL)
 
+    last_prices = {sym: float(bars[-1]["close"]) for sym, bars in ohlcv_map.items() if len(bars) >= 25}
+    earn_summaries = {t["symbol"]: _summarize_earnings(earnings_map.get(t["symbol"], [])) for t in tickers}
+    sector_pct_map = _build_sector_percentile_tables(tickers, last_prices, earn_summaries)
+
     snapshots: list[dict[str, Any]] = []
     for t in tickers:
         sym = t["symbol"]
@@ -320,7 +409,7 @@ def _compute_base_snapshots(db: Database) -> list[dict[str, Any]]:
         rs_63d = float(last["rs_spy_63d"] * 100.0) if pd.notna(last.get("rs_spy_63d")) else 0.0
 
         setups = detect_chart_setups(df)
-        earn_sum = _summarize_earnings(earnings_map.get(sym, []))
+        earn_sum = earn_summaries[sym]
         insider_sum = _summarize_insiders(insiders_map.get(sym, []))
         opt_snap = options_map.get(sym)
 
@@ -328,9 +417,9 @@ def _compute_base_snapshots(db: Database) -> list[dict[str, Any]]:
             setups.append(
                 {
                     "id": "insider_buy",
-                    "label": "Insider Buying",
+                    "label": "Insider Proxy Buy",
                     "tone": "bullish",
-                    "detail": f"{insider_sum['buys_90d']} open-market purchase(s) totaling ₹{insider_sum['buy_value_90d']:,.0f}.",
+                    "detail": f"{insider_sum['buys_90d']} Yahoo-reported purchase(s) totaling ₹{insider_sum['buy_value_90d']:,.0f} (unverified vs SEBI SAST).",
                 }
             )
         if opt_snap and opt_snap.get("pc_vol_ratio") is not None and opt_snap["pc_vol_ratio"] <= 0.65:
@@ -359,8 +448,8 @@ def _compute_base_snapshots(db: Database) -> list[dict[str, Any]]:
 
         p_ml = _score_ml_alpha(pred)
         p_mom = _score_momentum(last)
-        p_val = _score_valuation(fund, close)
-        p_qual = _score_quality(fund, earn_sum)
+        p_val = _score_valuation(fund, close, sector_scores=sector_pct_map.get(sym))
+        p_qual = _score_quality(fund, earn_sum, sector_scores=sector_pct_map.get(sym))
         p_sent = _score_catalysts_flow(last, avg_sent, opt_snap, insider_sum)
 
         drivers, risks = _explain_stock(last, fund, pred, avg_sent, setups, earn_sum, insider_sum, opt_snap)
@@ -412,14 +501,18 @@ def _compute_base_snapshots(db: Database) -> list[dict[str, Any]]:
                     "sentiment": p_sent,
                 },
                 "ml": {
+                    "pred_alpha_40d": pred.get("pred_alpha_40d", pred["pred_alpha_20d"]) if pred else 0.0,
                     "pred_alpha_20d": pred["pred_alpha_20d"] if pred else 0.0,
                     "prob_outperform": pred["prob_outperform"] if pred else 50.0,
                     "prob_tb_win": pred.get("prob_tb_win", 50.0) if pred else 50.0,
+                    "expected_return_40d": pred.get("expected_return_40d", pred["expected_return_20d"]) if pred else 0.0,
                     "expected_return_20d": pred["expected_return_20d"] if pred else 0.0,
                     "target_price": pred.get("target_price") if pred else None,
                     "stop_price": pred.get("stop_price") if pred else None,
                     "risk_reward": pred.get("risk_reward") if pred else None,
                 },
+                "strategy_id": STRATEGY_ID_SHORTLIST,
+                "validation_status": "unvalidated_research_composite",
                 "setups": setups,
                 "bullish_drivers": drivers,
                 "risk_flags": risks,
@@ -449,10 +542,11 @@ def build_shortlist(
         w_sum = 1.0
     w = {k: v / w_sum for k, v in w.items()}
 
+    aux_excluded = {BENCHMARK_SYMBOL, BENCHMARK_TRI_SYMBOL, GOLDBEES_SYMBOL}
     base_snapshots = _compute_base_snapshots(db)
     results: list[dict[str, Any]] = []
     for snap in base_snapshots:
-        if not include_benchmark and snap["symbol"] in NON_EQUITY_SYMBOLS:
+        if not include_benchmark and snap["symbol"] in aux_excluded:
             continue
         if sector != "ALL" and snap["sector"] != sector:
             continue

@@ -775,8 +775,9 @@ class Database:
                     trained_at, horizon_days, sample_count, symbol_count,
                     hit_rate, ic_spearman, top5_spread, avg_top5_return,
                     avg_bench_return, tb_auc, tb_top5_precision,
-                    feature_importances_json, folds_json, regime_stats_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    feature_importances_json, folds_json, regime_stats_json,
+                    model_version
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run["trained_at"],
@@ -793,6 +794,7 @@ class Database:
                     json.dumps(run["feature_importances"]),
                     json.dumps(run["folds"]),
                     json.dumps(run.get("regime_stats", {})),
+                    str(run.get("model_version", "v7")),
                 ),
             )
             if NON_EQUITY_SYMBOLS:

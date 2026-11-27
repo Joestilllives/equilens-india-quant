@@ -81,8 +81,8 @@
           <div>
             <div class="panel-header" style="margin-bottom: 10px;">
               <div>
-                <h2 class="panel-title">Top Shortlisted NSE Bullish Candidates</h2>
-                <p class="panel-sub">Ranked by Triple-Barrier ML probability, 20D alpha vs. NIFTY 50, momentum, valuation, PEAD results quality, promoter/insider trades &amp; Indian market news</p>
+                <h2 class="panel-title">Top Shortlisted NSE Candidates <span class="badge badge-neutral" style="margin-left:6px; font-size:11px;">Visual Composite (Unvalidated)</span></h2>
+                <p class="panel-sub">Visual 5-pillar research view combining V7-ML 40D alpha, momentum, sector-normalized snapshot fundamentals, Yahoo insider proxy &amp; news. Live execution uses the audited V7-ML + HRP engine exclusively.</p>
               </div>
               <div id="ml-badge-strip" class="pill-group"></div>
             </div>
@@ -137,7 +137,7 @@
                   <option value="breakout_20d">20D Breakout + Volume</option>
                   <option value="stage2_uptrend">Stage-2 Uptrend</option>
                   <option value="uptrend_pullback">Uptrend Pullback</option>
-                  <option value="insider_buy">Promoter / Insider Buying</option>
+                  <option value="insider_buy">Yahoo Insider Proxy Buying</option>
                   <option value="rs_leader">RS Leader vs NIFTY 50</option>
                   <option value="macd_cross">MACD Bull Cross</option>
                   <option value="oversold_watch">Oversold RSI Watch</option>
@@ -250,7 +250,7 @@
               </div>
 
               <div class="panel">
-                <h3 class="section-label">Promoter &amp; Insider Disclosures (NSE / SEBI)</h3>
+                <h3 class="section-label">Insider Transactions (Yahoo Finance Proxy — Unverified vs SEBI)</h3>
                 <div id="det-insiders-box" class="table-wrap" style="max-height: 295px; overflow-y: auto;"></div>
               </div>
             </div>
@@ -628,7 +628,7 @@
 
             <div class="grid-2">
               <div>
-                <h3 class="section-label">Top NSE Institutional Delivery Accumulation</h3>
+                <h3 class="section-label">Top NSE Delivery Concentration (All Market Participants)</h3>
                 <div class="table-wrap" style="max-height: 320px; overflow-y: auto;">
                   <table class="data-table tabular">
                     <thead>
@@ -676,7 +676,7 @@
             <div class="panel-header">
               <div>
                 <h2 class="panel-title">Prediction Journal &amp; Live Calibration Scorecard</h2>
-                <p class="panel-sub">Logs every Top-5 NSE shortlist pick and grades actual +5D / +20D / +60D returns against NIFTY 50</p>
+                <p class="panel-sub">Separates live visual shortlist snapshots from non-overlapping 40D V7-ML OOS cohorts graded against NIFTY 50 TRI</p>
               </div>
               <button id="btn-log-journal" type="button" class="btn btn-primary">Snapshot &amp; Grade Today's Picks</button>
             </div>
@@ -692,7 +692,7 @@
                     <th>Predicted Triple-Barrier Bucket</th>
                     <th class="num">Observations</th>
                     <th class="num">Actual TB Win Rate</th>
-                    <th class="num">Avg Actual 20D Return</th>
+                    <th class="num">Avg Actual 40D Return</th>
                     <th class="num">Avg Excess vs NIFTY 50</th>
                   </tr>
                 </thead>
@@ -714,8 +714,8 @@
                     <th class="num">Score</th>
                     <th class="num">TB Prob</th>
                     <th class="num">+5D</th>
-                    <th class="num">+20D</th>
-                    <th class="num">NIFTY 20D</th>
+                    <th class="num">+40D / +20D</th>
+                    <th class="num">Bench</th>
                     <th class="num">Outcome</th>
                   </tr>
                 </thead>
@@ -753,6 +753,6 @@
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
-  <script src="/static/app.js?v=main-safety"></script>
+  <script src="/static/app.js?v=7.0"></script>
 </body>
 </html>

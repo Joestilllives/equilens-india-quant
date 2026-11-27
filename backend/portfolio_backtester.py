@@ -32,6 +32,7 @@ from .config import (
     TRI_BENCHMARK_SYMBOL,
     VOL_INDEX_SYMBOL,
 )
+from .convex_optimizer import solve_convex_nse_portfolio
 from .data_health import build_clean_price_matrix
 from .database import Database
 from .hrp_allocator import (
@@ -39,6 +40,7 @@ from .hrp_allocator import (
     apply_concentration_caps,
     compute_hrp_weights,
 )
+from .india_structural_signals import build_causal_nse_four_factors, compute_iima_four_factor_alpha
 from .indian_costs import FifoTaxLedger, compute_indian_delivery_cost
 
 INDIA_CASH_ANNUAL_YIELD = 0.062
@@ -411,7 +413,36 @@ def _simulate_single_tranche(
                     sym: max(0.12, float(vol_df.loc[dt, sym]) if (sym in vol_df.columns and pd.notna(vol_df.loc[dt, sym])) else 0.25)
                     for sym in chosen
                 }
-                if eff_weighting == "hrp":
+                if eff_weighting == "convex":
+                    ret_win = log_rets_df[chosen].iloc[max(0, pos - 126) : pos] if pos >= 30 else None
+                    max_stk_cap = 0.05 if top_k >= 20 else round(min(0.15, 1.20 / max(1, top_k)), 4)
+                    max_sec_cap = 0.25 if top_k < 10 else 0.20
+                    adv_now = {
+                        sym: float(adv_df.loc[dt, sym])
+                        for sym in chosen
+                        if adv_df is not None and sym in adv_df.columns and pd.notna(adv_df.loc[dt, sym])
+                    }
+                    px_now = {sym: float(px_arr[pos, px_col[sym]]) for sym in chosen if sym in px_col}
+                    unit_map = solve_convex_nse_portfolio(
+                        symbols=chosen,
+                        alpha_scores=alpha_map,
+                        returns_window=ret_win,
+                        fallback_vols=vols_dict,
+                        sector_map=sector_map,
+                        current_weights=current_weights,
+                        target_exposure=1.0,
+                        max_stock_w=max_stk_cap,
+                        max_sector_w=max_sec_cap,
+                        capital_inr=tranche_eq,
+                        adv_map=adv_now,
+                        fifo_lots=tax_ledger.export_lots(),
+                        prices=px_now,
+                        as_of_date=dt,
+                    )
+                    raw_vec = np.array([unit_map.get(s, 0.0) for s in chosen], dtype=float)
+                    r_sum = float(np.sum(raw_vec))
+                    raw_vec = raw_vec / r_sum if r_sum > 1e-9 else np.full(len(chosen), 1.0 / len(chosen))
+                elif eff_weighting == "hrp":
                     ret_win = log_rets_df[chosen].iloc[max(0, pos - 126) : pos] if pos >= 30 else None
                     unit_map = compute_hrp_weights(
                         symbols=chosen,
@@ -446,7 +477,7 @@ def _simulate_single_tranche(
                     rebal_exp = min(target_exposure, float(np.clip(vol_target / max(0.08, est_v), 0.25, 1.0)))
 
                 new_weights = {sym: float(w * rebal_exp) for sym, w in zip(chosen, raw_vec)}
-                if eff_weighting in ("hrp", "corr_penalized") and len(chosen) >= 8:
+                if eff_weighting in ("hrp", "corr_penalized", "convex") and len(chosen) >= 8:
                     max_stk_cap = 0.05 if top_k >= 20 else round(min(0.15, 1.20 / max(1, top_k)), 4)
                     max_sec_cap = 0.25 if top_k < 10 else 0.20
                     new_weights = apply_concentration_caps(new_weights, sector_map, max_stk_cap, max_sec_cap, rebal_exp)
@@ -459,7 +490,7 @@ def _simulate_single_tranche(
                         band=no_trade_band,
                         target_total=tgt_sum,
                     )
-                    if eff_weighting in ("hrp", "corr_penalized") and len(chosen) >= 8:
+                    if eff_weighting in ("hrp", "corr_penalized", "convex") and len(chosen) >= 8:
                         max_stk_cap = 0.05 if top_k >= 20 else round(min(0.15, 1.20 / max(1, top_k)), 4)
                         max_sec_cap = 0.25 if top_k < 10 else 0.20
                         new_weights = apply_concentration_caps(new_weights, sector_map, max_stk_cap, max_sec_cap, tgt_sum)
@@ -608,6 +639,9 @@ def build_backtest_market_context(db: Database) -> dict[str, Any]:
     gold_nifty_chg, gold_inr_ret_series = build_causal_gold_series(
         prices_df.index, gold_map, fx_map, bench_price_series, goldbees_series=goldbees_series
     )
+    four_factors_df = build_causal_nse_four_factors(
+        prices_df, eval_bench_series.pct_change().fillna(0.0), annual_rf=0.062
+    )
     idx_loc = {d: i for i, d in enumerate(prices_df.index)}
 
     return {
@@ -628,6 +662,7 @@ def build_backtest_market_context(db: Database) -> dict[str, Any]:
         "eval_bench_series": eval_bench_series,
         "gold_nifty_chg": gold_nifty_chg,
         "gold_inr_ret_series": gold_inr_ret_series,
+        "four_factors_df": four_factors_df,
         "idx_loc": idx_loc,
     }
 
@@ -877,12 +912,17 @@ def run_oos_portfolio_backtest(
     p_stats = _stats(p_rets, equity, final_port_post_tax)
     s_stats = _stats(s_rets, bench_equity, final_bench_post_tax)
     two_factor = compute_two_factor_alpha(p_rets, s_rets, eqw_daily, rf_daily=INDIA_CASH_DAILY_YIELD)
+    four_factor = compute_iima_four_factor_alpha(dates_record, p_rets, ctx["four_factors_df"])
     p_stats.update(
         {
             "alpha_2f_pct": two_factor["alpha_2f_pct"],
             "beta_mkt": two_factor["beta_mkt"],
             "beta_size": two_factor["beta_size"],
             "alpha_2f_tstat": two_factor["alpha_tstat"],
+            "alpha_4f_pct": four_factor["alpha_4f_pct"],
+            "alpha_4f_tstat": four_factor["alpha_tstat"],
+            "beta_hml": four_factor["beta_hml"],
+            "beta_wml": four_factor["beta_wml"],
         }
     )
 

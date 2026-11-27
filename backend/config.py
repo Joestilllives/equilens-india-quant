@@ -26,6 +26,7 @@ NON_EQUITY_SYMBOLS: frozenset[str] = frozenset({
 })
 STRATEGY_ID_ML = "v7_book_hybrid_hrp"
 STRATEGY_ID_EXECUTION = "v7_book_live_execution"
+STRATEGY_ID_SHORTLIST = "unvalidated_research_composite"
 
 # Live Security & Data Freshness Safety Controls
 _raw_cors = os.getenv("EQUILENS_CORS_ORIGINS", "http://127.0.0.1:8000,http://localhost:8000")
@@ -88,7 +89,7 @@ DEFAULT_STARRED = {
     "BHARTIARTL.NS", "BEL.NS", "TRENT.NS", "^NSEI",
 }
 
-HISTORY_PERIOD = "5y"
+HISTORY_PERIOD = "10y"
 ML_HORIZON_DAYS = 40  # ~2-month horizon reduces Indian short-term mean-reversion noise & STT churn
 
 # Symmetric 40D Triple-Barrier payoff labeling (matches 40D Indian swing horizon; eliminates asymmetric stop whipsaw)

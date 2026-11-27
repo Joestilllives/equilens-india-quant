@@ -354,16 +354,16 @@ def get_money_signals_summary(db: Database) -> dict[str, Any]:
         )
 
         if deliv_now >= 55.0 and deliv_surge >= 5.0:
-            tag = "Strong Inst. Delivery"
+            tag = "High Delivery Surge"
             tone = "bullish"
         elif deliv_now >= 52.0:
-            tag = "Steady Delivery"
+            tag = "High Delivery Conc."
             tone = "bullish"
         elif deliv_now < 35.0:
-            tag = "Speculative / Intraday"
+            tag = "Low Delivery / Intraday"
             tone = "warning"
         else:
-            tag = "Balanced Flow"
+            tag = "Moderate Delivery"
             tone = "neutral"
 
         t_meta = tickers.get(sym, {})
@@ -402,6 +402,7 @@ def get_money_signals_summary(db: Database) -> dict[str, Any]:
             "bank_vs_nifty_63d_pct": bank_nifty_63d,
         },
         "stock_delivery_map": stock_delivery,
+        "delivery_interpretation_note": "Official NSE bhavcopy delivery % reflects settled delivery volume across all participants (institutional, promoter, and retail combined — participant breakdown is not published by NSE).",
         "top_accumulation": top_accum,
         "universe_bulk_deals": universe_deals[:15],
         "top_nse_deals": all_top_deals,
