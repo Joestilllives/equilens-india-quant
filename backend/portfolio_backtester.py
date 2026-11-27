@@ -569,40 +569,8 @@ def _simulate_single_tranche(
     return daily_rets, total_turnover, rebalance_count
 
 
-def run_oos_portfolio_backtest(
-    db: Database,
-    top_k: int = 10,
-    rebalance_days: int = 40,
-    cost_bps: float = DEFAULT_COST_BPS,
-    regime_gate: bool = True,
-    initial_capital: float = 1000000.0,
-    max_per_sector: int = 2,
-    inv_vol_weight: bool = True,
-    n_tranches: int = 4,
-    vol_target: float | None = 0.18,
-    weighting_mode: str = "hrp",
-    hrp_alpha_tilt: float = 0.0,
-    no_trade_band: float = 0.0,
-    stagger_initial_deployment: bool = True,
-    use_statutory_costs: bool = True,
-    enable_dd_brake: bool = True,
-    gold_reserve_share: float = GOLDBEES_RESERVE_SHARE,
-    enforce_smart_money_shield: bool = False,
-    oos_override: list[dict[str, Any]] | pd.DataFrame | None = None,
-) -> dict[str, Any]:
-    """Simulate strictly out-of-sample 4-Tranche NSE portfolio vs. NIFTY 50 TRI (NIFTYBEES.NS)."""
-    if oos_override is not None:
-        oos_df = oos_override.copy() if isinstance(oos_override, pd.DataFrame) else pd.DataFrame(oos_override)
-    else:
-        oos = db.get_oos_history()
-        if not oos:
-            raise ValueError("No walk-forward OOS history available. Train the ML model first.")
-        oos_df = pd.DataFrame(oos)
-
-    oos_df = oos_df[~oos_df["symbol"].isin(NON_EQUITY_SYMBOLS)].copy()
-    if oos_df.empty:
-        raise ValueError("No equity OOS rows available after excluding non-equity symbols.")
-
+def build_backtest_market_context(db: Database) -> dict[str, Any]:
+    """Precompute read-only market matrices once for reuse across multi-cell backtest grids."""
     ohlcv_map = db.get_all_ohlcv()
     sector_map = {t["symbol"]: t["sector"] for t in db.get_tickers()}
     macro = db.get_macro_series()
@@ -631,7 +599,6 @@ def run_oos_portfolio_backtest(
     bench_price_series = prices_df[BENCHMARK_SYMBOL].ffill(limit=5)
     bench_sma200 = bench_price_series.rolling(200, min_periods=50).mean()
 
-    # Use dividend-adjusted NIFTY 50 TRI proxy (NIFTYBEES.NS) when available
     use_tri = TRI_BENCHMARK_SYMBOL in prices_df.columns and int(prices_df[TRI_BENCHMARK_SYMBOL].notna().sum()) >= 120
     eval_bench_sym = TRI_BENCHMARK_SYMBOL if use_tri else BENCHMARK_SYMBOL
     eval_bench_type = "TRI" if use_tri else "PRICE"
@@ -641,15 +608,98 @@ def run_oos_portfolio_backtest(
     gold_nifty_chg, gold_inr_ret_series = build_causal_gold_series(
         prices_df.index, gold_map, fx_map, bench_price_series, goldbees_series=goldbees_series
     )
+    idx_loc = {d: i for i, d in enumerate(prices_df.index)}
 
-    oos_dates = sorted(set(oos_df["date"].unique()).intersection(set(prices_df.index)))
+    return {
+        "sector_map": sector_map,
+        "vix_map": vix_map,
+        "prices_df": prices_df,
+        "tradable_df": tradable_df,
+        "adv_df": adv_df,
+        "log_rets_df": log_rets_df,
+        "vol_df": vol_df,
+        "stock_cols": stock_cols,
+        "breadth_series": breadth_series,
+        "hilo_series": hilo_series,
+        "bench_price_series": bench_price_series,
+        "bench_sma200": bench_sma200,
+        "eval_bench_sym": eval_bench_sym,
+        "eval_bench_type": eval_bench_type,
+        "eval_bench_series": eval_bench_series,
+        "gold_nifty_chg": gold_nifty_chg,
+        "gold_inr_ret_series": gold_inr_ret_series,
+        "idx_loc": idx_loc,
+    }
+
+
+def run_oos_portfolio_backtest(
+    db: Database,
+    top_k: int = 10,
+    rebalance_days: int = 40,
+    cost_bps: float = DEFAULT_COST_BPS,
+    regime_gate: bool = True,
+    initial_capital: float = 1000000.0,
+    max_per_sector: int = 2,
+    inv_vol_weight: bool = True,
+    n_tranches: int = 4,
+    vol_target: float | None = 0.18,
+    weighting_mode: str = "hrp",
+    hrp_alpha_tilt: float = 0.0,
+    no_trade_band: float = 0.0,
+    stagger_initial_deployment: bool = True,
+    use_statutory_costs: bool = True,
+    enable_dd_brake: bool = True,
+    gold_reserve_share: float = GOLDBEES_RESERVE_SHARE,
+    enforce_smart_money_shield: bool = False,
+    oos_override: list[dict[str, Any]] | pd.DataFrame | None = None,
+    market_ctx: dict[str, Any] | None = None,
+    oos_by_date_override: dict[str, pd.DataFrame] | None = None,
+) -> dict[str, Any]:
+    """Simulate strictly out-of-sample 4-Tranche NSE portfolio vs. NIFTY 50 TRI (NIFTYBEES.NS)."""
+    ctx = market_ctx if market_ctx is not None else build_backtest_market_context(db)
+    sector_map = ctx["sector_map"]
+    vix_map = ctx["vix_map"]
+    prices_df = ctx["prices_df"]
+    tradable_df = ctx["tradable_df"]
+    adv_df = ctx["adv_df"]
+    log_rets_df = ctx["log_rets_df"]
+    vol_df = ctx["vol_df"]
+    stock_cols = ctx["stock_cols"]
+    breadth_series = ctx["breadth_series"]
+    hilo_series = ctx["hilo_series"]
+    bench_price_series = ctx["bench_price_series"]
+    bench_sma200 = ctx["bench_sma200"]
+    eval_bench_sym = ctx["eval_bench_sym"]
+    eval_bench_type = ctx["eval_bench_type"]
+    eval_bench_series = ctx["eval_bench_series"]
+    gold_nifty_chg = ctx["gold_nifty_chg"]
+    gold_inr_ret_series = ctx["gold_inr_ret_series"]
+    idx_loc = ctx["idx_loc"]
+
+    if oos_by_date_override is not None:
+        oos_by_date = oos_by_date_override
+        oos_dates = sorted(set(oos_by_date.keys()).intersection(set(prices_df.index)))
+    else:
+        if oos_override is not None:
+            oos_df = oos_override.copy() if isinstance(oos_override, pd.DataFrame) else pd.DataFrame(oos_override)
+        else:
+            oos = db.get_oos_history()
+            if not oos:
+                raise ValueError("No walk-forward OOS history available. Train the ML model first.")
+            oos_df = pd.DataFrame(oos)
+
+        oos_df = oos_df[~oos_df["symbol"].isin(NON_EQUITY_SYMBOLS)].copy()
+        if oos_df.empty:
+            raise ValueError("No equity OOS rows available after excluding non-equity symbols.")
+
+        oos_dates = sorted(set(oos_df["date"].unique()).intersection(set(prices_df.index)))
+        oos_by_date = {dt: grp for dt, grp in oos_df.groupby("date")}
+
     if len(oos_dates) < 30:
         raise ValueError("Insufficient overlapping OOS trading dates for portfolio simulation.")
 
     start_date, end_date = oos_dates[0], oos_dates[-1]
     sim_dates = [d for d in prices_df.index if start_date <= d <= end_date]
-    oos_by_date = {dt: grp for dt, grp in oos_df.groupby("date")}
-    idx_loc = {d: i for i, d in enumerate(prices_df.index)}
 
     effective_tranches = max(1, min(n_tranches, rebalance_days))
     offsets = sorted({(rebalance_days * t) // effective_tranches for t in range(effective_tranches)})

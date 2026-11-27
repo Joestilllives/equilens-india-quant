@@ -37,7 +37,7 @@ from backend.config import BENCHMARK_SYMBOL, DATA_DIR, DB_PATH, DEFAULT_UNIVERSE
 from backend.database import Database
 from backend.execution_engine import generate_rebalance_ticket, get_paper_ledger_status
 from backend.ml_predictor import _build_panel, train_and_predict_universe
-from backend.portfolio_backtester import run_oos_portfolio_backtest
+from backend.portfolio_backtester import build_backtest_market_context, run_oos_portfolio_backtest
 from backend.shortlister import build_shortlist
 from scripts.audit_overfitting_v6 import compute_cpcv_pbo, compute_stats, deflated_sharpe_ratio
 
@@ -56,21 +56,28 @@ def _calendar_year_line(dates: list[str], rets: list[float]) -> str:
     return " / ".join(parts)
 
 
-def _run_prior_only_multicycle(db: Database, label: str) -> dict[str, Any]:
+def _run_prior_only_multicycle(db: Database, label: str, market_ctx: dict[str, Any] | None = None) -> dict[str, Any]:
     """Run zero-parameter Book Prior + HRP vs V6 Prior + CorrPen across all available DB history (all 9 plateau cells)."""
+    ctx = market_ctx if market_ctx is not None else build_backtest_market_context(db)
     panel_v6, _ = _build_panel(db, model_version="v6", prior_variant="v6", enable_dm_damper=False)
     panel_v7, _ = _build_panel(db, model_version="v7", prior_variant="book", enable_dm_damper=True)
 
     oos_p6 = panel_v6[["date", "symbol", "nse_factor_prior"]].rename(columns={"nse_factor_prior": "pred_alpha"})
     oos_p7 = panel_v7[["date", "symbol", "nse_factor_prior"]].rename(columns={"nse_factor_prior": "pred_alpha"})
+    by_dt6 = {dt: grp for dt, grp in oos_p6.groupby("date")}
+    by_dt7 = {dt: grp for dt, grp in oos_p7.groupby("date")}
 
     wins_cagr = 0
     wins_sr = 0
     rows = []
     for k in (8, 10, 12):
         for reb in (30, 40, 60):
-            b6 = run_oos_portfolio_backtest(db, top_k=k, rebalance_days=reb, weighting_mode="corr_penalized", oos_override=oos_p6)
-            b7 = run_oos_portfolio_backtest(db, top_k=k, rebalance_days=reb, weighting_mode="hrp", oos_override=oos_p7)
+            b6 = run_oos_portfolio_backtest(
+                db, top_k=k, rebalance_days=reb, weighting_mode="corr_penalized", market_ctx=ctx, oos_by_date_override=by_dt6
+            )
+            b7 = run_oos_portfolio_backtest(
+                db, top_k=k, rebalance_days=reb, weighting_mode="hrp", market_ctx=ctx, oos_by_date_override=by_dt7
+            )
             m6, m7 = b6["portfolio_metrics"], b7["portfolio_metrics"]
             if m7["cagr_pct"] > m6["cagr_pct"]:
                 wins_cagr += 1
@@ -109,6 +116,11 @@ def _ensure_2004_2026_cache(cache_db: Path) -> bool:
         raw = yf.download(all_dl, start="2004-01-01", group_by="ticker", auto_adjust=True, threads=True, progress=False)
         if raw is None or raw.empty:
             return False
+        base_sectors = {}
+        try:
+            base_sectors = {t["symbol"]: t["sector"] for t in Database(DB_PATH).get_tickers()}
+        except Exception:
+            pass
         db = Database(cache_db)
         inserted_syms = 0
         for sym in all_dl:
@@ -128,7 +140,7 @@ def _ensure_2004_2026_cache(cache_db: Path) -> bool:
                     for idx, r in df.iterrows()
                 ]
                 db.upsert_ticker(
-                    symbol=sym, name=sym, sector="MultiCycle", industry="", exchange="NSE",
+                    symbol=sym, name=sym, sector=base_sectors.get(sym, "MultiCycle"), industry="", exchange="NSE",
                     summary="", fundamentals={}, data_source="yfinance_20y", updated_at="2026-11-26T00:00:00Z"
                 )
                 db.upsert_ohlcv(sym, bars)
@@ -168,9 +180,16 @@ def main() -> None:
         res_v6 = train_and_predict_universe(db, model_version="v6", prior_variant="v6", enable_dm_damper=False, persist=False)
         res_v7 = train_and_predict_universe(db, model_version="v7", prior_variant="book", enable_dm_damper=True, persist=True)
 
+        # Precompute market context & grouped OOS frames once for blazing-fast bit-identical grid evaluation
+        ctx_main = build_backtest_market_context(db)
+        oos_v6_df = pd.DataFrame(res_v6["oos_rows"])
+        oos_v7_df = pd.DataFrame(res_v7["oos_rows"])
+        by_dt_v6 = {dt: grp for dt, grp in oos_v6_df.groupby("date")}
+        by_dt_v7 = {dt: grp for dt, grp in oos_v7_df.groupby("date")}
+
         # GATE 1: HARDENED NET PERFORMANCE
-        bt_v6 = run_oos_portfolio_backtest(db, top_k=10, rebalance_days=40, weighting_mode="corr_penalized", oos_override=res_v6["oos_rows"])
-        bt_v7 = run_oos_portfolio_backtest(db, top_k=10, rebalance_days=40, weighting_mode="hrp", oos_override=res_v7["oos_rows"])
+        bt_v6 = run_oos_portfolio_backtest(db, top_k=10, rebalance_days=40, weighting_mode="corr_penalized", market_ctx=ctx_main, oos_by_date_override=by_dt_v6)
+        bt_v7 = run_oos_portfolio_backtest(db, top_k=10, rebalance_days=40, weighting_mode="hrp", market_ctx=ctx_main, oos_by_date_override=by_dt_v7)
 
         sm = bt_v6["spy_metrics"]
         m6 = bt_v6["portfolio_metrics"]
@@ -189,7 +208,7 @@ def main() -> None:
         print(f"  --> GATE 1 VERDICT: {'PASS' if gate1 else 'FAIL'}")
 
         # GATE 2: MULTI-CYCLE (8.8Y local DB + optional 20Y 2004-2026)
-        mc_8y = _run_prior_only_multicycle(db, "8.8Y FULL LOCAL NSE (2017-2026 incl. 2018 NBFC & 2020 COVID)")
+        mc_8y = _run_prior_only_multicycle(db, "8.8Y FULL LOCAL NSE (2017-2026 incl. 2018 NBFC & 2020 COVID)", market_ctx=ctx_main)
         gate2_local = mc_8y["wins_cagr"] >= 8 and mc_8y["wins_sr"] >= 8
 
         gate2_20y_status = "OFFLINE_SKIPPED"
@@ -211,8 +230,8 @@ def main() -> None:
         v6_grid_srs, v7_grid_srs = [], []
         for k in (8, 10, 12):
             for reb in (30, 40, 60):
-                b6 = run_oos_portfolio_backtest(db, top_k=k, rebalance_days=reb, weighting_mode="corr_penalized", oos_override=res_v6["oos_rows"])
-                b7 = run_oos_portfolio_backtest(db, top_k=k, rebalance_days=reb, weighting_mode="hrp", oos_override=res_v7["oos_rows"])
+                b6 = run_oos_portfolio_backtest(db, top_k=k, rebalance_days=reb, weighting_mode="corr_penalized", market_ctx=ctx_main, oos_by_date_override=by_dt_v6)
+                b7 = run_oos_portfolio_backtest(db, top_k=k, rebalance_days=reb, weighting_mode="hrp", market_ctx=ctx_main, oos_by_date_override=by_dt_v7)
                 g6, g7 = b6["portfolio_metrics"], b7["portfolio_metrics"]
                 v6_grid_rets.append(np.asarray(b6["_daily_returns"], dtype=float))
                 v7_grid_rets.append(np.asarray(b7["_daily_returns"], dtype=float))
@@ -226,8 +245,8 @@ def main() -> None:
                 )
 
         # Gate 4B: Extreme Cost Stress (50 bps/side = 100 bps RT)
-        bt_v7_50 = run_oos_portfolio_backtest(db, top_k=10, rebalance_days=40, cost_bps=50.0, weighting_mode="hrp", oos_override=res_v7["oos_rows"])
-        bt_v6_50 = run_oos_portfolio_backtest(db, top_k=10, rebalance_days=40, cost_bps=50.0, weighting_mode="corr_penalized", oos_override=res_v6["oos_rows"])
+        bt_v7_50 = run_oos_portfolio_backtest(db, top_k=10, rebalance_days=40, cost_bps=50.0, weighting_mode="hrp", market_ctx=ctx_main, oos_by_date_override=by_dt_v7)
+        bt_v6_50 = run_oos_portfolio_backtest(db, top_k=10, rebalance_days=40, cost_bps=50.0, weighting_mode="corr_penalized", market_ctx=ctx_main, oos_by_date_override=by_dt_v6)
         m7_50 = bt_v7_50["portfolio_metrics"]
         s7_50 = bt_v7_50["spy_metrics"]
         excess_50 = round(m7_50["cagr_pct"] - s7_50["cagr_pct"], 2)
