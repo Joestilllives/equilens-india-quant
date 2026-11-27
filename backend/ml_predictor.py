@@ -71,8 +71,9 @@ V6_FEATURE_COLS: list[str] = [
     "z_overnight_sent_63d",
 ]
 
-# V7 Canonical Book Feature Set (prunes collinear/zero-signal noise: z_sec_rel_126d,
-# z_vol_ratio_5_20, z_macro_tailwind_brent; adds CAPM Residual Mom, 12-7M, CGO, -Vasicek Beta)
+# V7.5-Core Canonical Book Feature Set (pruned collinear/noise: z_prox_52w_high, z_sec_rel_126d,
+# z_vol_ratio_5_20, z_macro_tailwind_brent, and RBI-managed z_macro_tailwind_fx;
+# retains CAPM Residual Mom, 12-7M, CGO, -Vasicek Beta & proven V6 survivors)
 FEATURE_COLS: list[str] = [
     "z_resid_12m1m",
     "z_resid_6m1m",
@@ -90,7 +91,6 @@ FEATURE_COLS: list[str] = [
     "vix_level",
     "bench_dist_200",
     "nse_breadth_50d",
-    "z_macro_tailwind_fx",
     "z_macro_tailwind_sp500",
     "z_max_ret_21d",
     "z_overnight_sent_63d",

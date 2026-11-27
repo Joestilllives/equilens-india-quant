@@ -1,15 +1,15 @@
-# EquiLens India Quant (`V7` Unified) — NSE Quantitative ML Shortlister, HRP Portfolio Engine & Paper-Trading Workstation
+# EquiLens India Quant (`V7.5-Core`) — NSE Quantitative ML Shortlister, HRP Portfolio Engine & Paper-Trading Workstation
 
 EquiLens India Quant is a full-stack Indian stock market (**NSE / NIFTY 50 TRI / INR `₹`**) quantitative research, walk-forward machine learning, institutional audit, and forward-proof paper-trading platform built with **FastAPI**, **SQLite (WAL)**, **yfinance**, **scikit-learn**, **SciPy**, and a zero-build **Vanilla HTML/CSS/JS** UI.
 
 > **Branch Map:**
-> - **`main` (`5f303af`):** Original `V6` strategy + live safety fixes & ETF-leakage hotfix (untouched V6 alpha).
-> - **`feat/v7-book-research` (Active Live Production Engine):** **Unified Frozen `V7`** — combines the best of `V6` (risk shields), `V6.1` (hardened accounting, TRI, next-open chart backtester, sector-normalized shortlist, UI freshness badges), `V7` (canonical finance-book alpha + HRP + 100% free Day-1 PIT pipelines), and `V8`'s non-alpha institutional toolkit (IIMA 4-Factor Indian Alpha, Indian Forensic/QMJ shield, RBI DBIE telemetry, opt-in `₹1 Cr+` Boyd Convex Optimizer).
+> - **`main` (Active Live Production Engine — `V7.5-Core`):** Unified **`V7.5-Core`** — combines `V6`'s crash-defense skeleton, `V6.1` institutional accounting & safety hardening, `V7` canonical finance-book alpha (`19` features, RBI-managed `USD/INR` FX noise pruned) + `HRP` (`126D Ledoit-Wolf`) + IIMA 4-Factor attribution, and **`V7.5-Core`'s strictly causal 20-Day Official NSE Delivery Shield (`35% ≤ deliv_20d < 98%`, `≥ ₹2 Cr/day` deliverable turnover, retention + entry parity), Indian `320–364d` LTCG Tax-Cliff Guard, Post-Budget 2024 Reserve Tax Honesty, and SEBI Delivery Drift Telemetry**.
+> - **`feat/v7-book-research`:** Synced development branch tracking `main`.
 > - **`feat/v8-frontier-research`:** Experimental `V8` ML/regime ablations (tested against `V7`; see `PLAYBOOK.md` Section 7.6 & Section 8).
 
 ---
 
-## Core Architecture (`V7` Unified Institutional India Edition)
+## Core Architecture (`V7.5-Core` Institutional India Edition)
 
 ### 1. Live NSE Data, Non-Equity Hygiene & 100% Free PIT Pipelines (`backend/config.py`, `backend/data_fetcher.py`, `backend/pit_fundamentals.py`)
 - **130 Liquid NSE Leaders + `^NSEI` (NIFTY 50) + `NIFTYBEES.NS` (TRI Proxy) + `GOLDBEES.NS` (30% Gold Reserve)** × 10 years of daily OHLCV, quarterly earnings, Yahoo insider proxy, and recency-weighted Indian catalyst news (`backend/catalyst_nlp.py`).
@@ -19,7 +19,7 @@ EquiLens India Quant is a full-stack Indian stock market (**NSE / NIFTY 50 TRI /
 ### 2. Walk-Forward `V7` Canonical Book ML Engine (`backend/ml_predictor.py`)
 - **Canonical Finance & Behavioral Signals (Zero Lookahead):**
   - **CAPM Residual Momentum (`12-1M`, `6-1M`)** (*Blitz, Huij & Martens 2011; Ilmanen*), **Intermediate Momentum (`12-7M`)** (*Novy-Marx 2012*), **Capital Gains Overhang (`CGO 126D` via VWAP)** (*Grinblatt & Han 2005; Kahneman & Thaler*), **Betting Against Beta (`-Vasicek β`)** (*Frazzini & Pedersen 2014*), **Daniel–Moskowitz (2016) Bear-Rebound Crash Damper** (`NIFTY 252D < 0 & VIX ≥ 19`), and **Pollet–Wilson (2010) `avg_corr_63`** telemetry.
-  - Preserves proven `V6` survivors (FIP smoothness, 1Y & downside vol, 3M sector-relative alpha, MAX lottery avoidance, overnight institutional sentiment, FX/S&P 500 tailwinds); prunes noisy/collinear features (`sec_rel_126d`, `vol_ratio_5_20`, `macro_tailwind_brent`).
+  - Preserves proven `V6` survivors (FIP smoothness, 1Y & downside vol, 3M sector-relative alpha, MAX lottery avoidance, overnight institutional sentiment, S&P 500 tailwind); prunes noisy/collinear features (`prox_52w_high`, `sec_rel_126d`, `vol_ratio_5_20`, `macro_tailwind_brent`, and RBI-managed `macro_tailwind_fx` — `19` clean features total).
 - **Hybrid Ranking Architecture:** `50%` Canonical Multi-Factor Prior + `50%` Regularized 40D **Vasicek Beta-Adjusted Residual Sharpe** ML (`Ridge` on cross-sectional features only + shallow `HistGradientBoostingRegressor` with macro interactions), evaluated across **5 expanding chronological folds with a strict 40-day embargo**.
 
 ### 3. `V7` 4-Tranche `HRP` Portfolio & Hardened Indian Accounting (`backend/hrp_allocator.py`, `backend/portfolio_backtester.py`, `backend/indian_costs.py`)

@@ -156,8 +156,8 @@ Everything built, tested, kept, or rejected after `V6` (`9d09dfb`) is summarized
 
 ## 8. Live Production `V7.5-Core` Upgrade, Blind-Spot Red-Team Audit & Future Watchlist
 
-**Live Branch:** `feat/v7-book-research` (`github.com/Joestilllives/equilens-india-quant`)  
-**Status:** **LIVE PRODUCTION DEFAULT (`strategy_id: v75_core_delivery_shield`)** — `V7` Canonical Finance + HRP engine upgraded with a strictly `T-1` causal **20-Day Official NSE Delivery Shield (`35% <= deliv_20d < 98%`, Deliverable Value `>= ₹2 Cr/day`)**, **Indian `320–364d` LTCG Tax-Cliff Guard**, **Post-Budget 2024 Reserve Tax Honesty**, and **SEBI Delivery Regime-Drift Telemetry**.
+**Live Branch:** `main` (and `feat/v7-book-research`, `github.com/Joestilllives/equilens-india-quant`)  
+**Status:** **LIVE PRODUCTION DEFAULT (`strategy_id: v75_core_delivery_shield`)** — `V7` Canonical Finance (`19` features — RBI-managed `z_macro_tailwind_fx` pruned) + HRP engine upgraded with a strictly `T-1` causal **20-Day Official NSE Delivery Shield (`35% <= deliv_20d < 98%`, Deliverable Value `>= ₹2 Cr/day`)**, **Indian `320–364d` LTCG Tax-Cliff Guard**, **Post-Budget 2024 Reserve Tax Honesty**, and **SEBI Delivery Regime-Drift Telemetry**.
 
 ### 8.1 What Changed from Frozen `V7` (`34e7747`) → Live `V7.5-Core`
 1. **Complete 100% Daily 7-Year Official NSE Delivery Archive (`2020-01-01 → 2026-11-26`):**
@@ -175,6 +175,9 @@ Everything built, tested, kept, or rejected after `V6` (`9d09dfb`) is summarized
    - `portfolio_backtester.py` now tracks exact daily rupee reserve gains (`liquid_gain_inr`, `gold_gain_inr`) and deducts reserve taxes directly inside `after_tax_cagr_pct`, reporting both `after_tax_cagr_liquidcase_pct` and `after_tax_cagr_arbitrage_pct`.
 5. **SEBI Delivery Regime-Drift Telemetry (`money_signals.py` + `execution_engine.py`):**
    - Surfaces `delivery_regime_telemetry` (`universe_count`, `below_35_count`, `below_35_pct`, `median_20d_deliv_pct`, `p25_20d_deliv_pct`, `t2t_flagged_count`, `low_deliv_turnover_count`, `drift_status`) on `/api/money-signals` and `/api/execution/ticket`, raising `drift_status: "warning"` if `below_35_pct < 5.0%`.
+6. **33-Run Leave-One-Out Audit & Pruning `z_macro_tailwind_fx` (`20 → 19` Features):**
+   - Full Leave-One-Out ablation across all 13 system layers and all 20 features confirmed `z_neg_beta` (`-4.59%` PT when removed) and all 6 canonical prior factors are the top 6 MVPs, 12/13 layers actively earn their keep, and **`z_macro_tailwind_fx`** (RBI-managed USD/INR stock beta) was the **single drag** across all 33 components.
+   - Pruning `z_macro_tailwind_fx` ONLY (while keeping `6-Gauge Risk Gate`, `z_macro_tailwind_sp500`, and `bench_dist_200`) swept **`7/9` PT, `6/9` SR, `7/9` MaxDD** across the 9-cell plateau (**`3/3`** across all `40D` cells) and won `2024` (`+35.7%` vs `+32.8%`), `2025` (`+9.7%` vs `+7.7%`), and `2026 YTD` (`-1.4%` vs `-2.2%`) while *reducing* model complexity (`20 → 19` features).
 
 ### 8.2 Verified Production Scorecard (100% Daily Archive, `2021-07 → 2026-09`, `K=10`, `40D`, Exact Statutory Costs + FIFO Equity & Reserve Tax)
 
@@ -182,8 +185,8 @@ Everything built, tested, kept, or rejected after `V6` (`9d09dfb`) is summarized
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
 | **Frozen `V6` Base** *(Unshielded)* | `+23.40%` | `~+19.6%` *(eq-only `+20.91%`)* | `~+19.8%` | `1.21` | `-9.90%` | `+3.01%` (`t=+0.9`) |
 | **Frozen `V7` Base** *(Unshielded)* | `+26.54%` | `+22.22%` *(eq-only `+23.70%`)* | `+22.39%` | `1.50` | `-12.18%` | `+7.05%` (`t=+1.98`) |
-| **`V7.5-Core` (100% Daily + T2T/₹2Cr, `LTCG=OFF`)** | `+28.59%` | `+23.92%` *(eq-only `+25.36%`)* | `+24.09%` | `1.75` | `-10.64%` | `+10.05%` (`t=+2.89`) |
-| **Live `V7.5-Core` (+ `320–364d` LTCG Guard — DEFAULT)** | **`+28.91%`** | **`+24.44%`** | **`+24.61%`** | **`1.77`** | **`-10.56%`** | **`+10.22%` (`t=+2.95`)** |
+| **`V7.5-Core` (`20` feats + T2T/₹2Cr + LTCG Guard)** | `+28.91%` | `+24.45%` | `+24.61%` | `1.77` | `-10.56%` | `+10.22%` (`t=+2.95`) |
+| **Live `V7.5-Core` (`19` feats, FX Pruned — `main` DEFAULT)** | **`+29.97%`** | **`+25.67%`** | **`+25.84%`** | **`1.84`** | **`-10.23%`** | **`+10.96%` (`t=+3.14`)** |
 
 * **Independent Robustness Audits (Overfitting Score: `1.5 / 10`):**
   - `35%` threshold was pre-registered in `V6` before downloading the 6Y archive; flat plateau across `25%–45%` and `T-5` extra lag (`+29.03%`, `SR 1.75`); wins `5/6` calendar years; clears `N=80` cumulative DSR (`99.77%`).
@@ -195,6 +198,11 @@ Everything built, tested, kept, or rejected after `V6` (`9d09dfb`) is summarized
 - **Ledoit–Wolf QIS Nonlinear Shrinkage inside HRP:** `p=10, T=126` too low-dimensional; tied/trailed linear Ledoit–Wolf.
 - **KMZ (2024) RFF-Ridge, JKMP (2026) Signal Smoothing, Gârleanu–Pedersen Aim `0.65`:** Tied linear Ridge or hurt India Large/Midcap (`-1.7%/yr`) / Smallcaps.
 - **Self-Adaptive Bottom-20%/25% Cross-Sectional Delivery Percentile:** Tested against Static `<35%` and **trailed** on CAGR (`+28.66%–29.03%` vs `+29.42%`), FIFO Post-Tax, MaxDD (`-12.1% to -12.5%` vs `-10.3%`), and `2026 YTD` — because dropping the bottom 25% in 2025–2026 discards healthy `42%`-delivery stocks.
+- **Peer Ideas Tested & Rejected (`V7.5-Core` Defended Its Crown):**
+  - **Robeco 3-Factor Residual Momentum (`MKT+SMB+HML`):** Standalone IC `-0.0176 (t=-0.79)`; `15%` blend cut CAGR `-1.90%/yr` & Sharpe `1.77 → 1.62` (1-factor CAPM residual momentum is cleaner on `N=130` NSE stocks).
+  - **Wright/Robeco PEAD (`CAR[-1,+2]` + `EPS Surprise %`):** Standalone IC `-0.0041 (t=-0.23)`, only `43.3%` OOS coverage; hurt Sharpe/MaxDD.
+  - **Indian March Tax-Loss Harvesting (`TLH`):** Because the 40D rebalance already exits losers mechanically, only `16` small lots (`₹14k` loss) existed across 5.2 years; NSE round-trip STT (`₹459`) exceeded tax deferred (`₹114`) for a net `-₹345` loss.
+  - **Dropping ALL 5 ML Macro Features:** Failed 9-cell plateau (`SR 4/9`, `MaxDD 4/9`, `2025/2026` dropped to `+5.1%/-3.9%`) — keep `z_macro_tailwind_sp500`, `bench_dist_200`, and the `6-Gauge Risk Gate`.
 
 ### 8.4 Operational Watchlist for All Future Iterations (Do NOT Forget These!)
 1. **Watch SEBI Delivery Regime Drift (`below_35_pct`):**
