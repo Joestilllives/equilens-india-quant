@@ -79,3 +79,53 @@
 | **Midcap / BankNIFTY in Risk Gate** | Extra index crash triggers | Redundant with NSE Breadth & 52W Hi-Lo; added false alarms in normal rallies. |
 | **External Doc Momentum/Vol Blends** *(21D Frenzy, 50/50 Steady-Climb, Correlated Peer Mom, Drop Mega-Caps, Quiet Accum, Global Gap)* | Extra signals from independent `.docx` | None beat `V6 + <35% Delivery Shield` — `V6`'s 19 features already capture `12-1M`, `FIP`, and `MAX` lottery avoidance cleanly. |
 | **Remove Any Core `V6` Layer** *(22Y Ablation)* | Simplify the engine further | Across `2004–2020` & `2021–2026`, **15 of 16 layers** actively added Sharpe, CAGR, or crash defense (`-10%` Brake saved `10.3%` in 2008/2020; 4-Tranche added `+0.23` Sharpe). |
+
+---
+
+## 7. `V7` Extension — Canonical Finance & Economics Upgrades (`feat/v7-book-research`)
+
+`V7` preserves **100% of `V6`'s proven skeleton and crash-defense chassis** (50/50 Prior + Walk-Forward Ridge/HGB, 40D embargo, 6-Gauge Stress Gate, 18% Vol Target, one-way intra-cycle de-risking, `-10%/-6%` Peak-NAV Drawdown Brake, `70/30` `LIQUIDCASE`/`GOLDBEES` reserve, 4 staggered tranches, Top-10 / Hold Top-30 buffer, `≤12%` stock / `≤20%` sector caps), and applies **four surgical, peer-reviewed upgrades** plus **honest institutional accounting** and **100% free Point-In-Time (PIT) data pipelines**.
+
+### 7.1 What Changed From `V6` → `V7` (And Exactly Why)
+
+| Component | `V6` Baseline | `V7` Upgrade | Canonical Literature & Why It Helped on India NSE |
+| :--- | :--- | :--- | :--- |
+| **Non-Equity Hygiene** | Filtered only `^NSEI` (allowed `GOLDBEES.NS` & `NIFTYBEES.NS` in `ohlcv` to leak into predictions/breadth) | Strict `NON_EQUITY_SYMBOLS` filter (`^NSEI`, `NIFTYBEES.NS`, `GOLDBEES.NS`) everywhere *(also backported to `main` @ `5f303af`)* | Prevents reserve/benchmark ETFs from ever entering stock ranking, ML training, or breadth gauges. |
+| **Factor Prior (Zero ML Params)** | Raw `6-1M` & `12-1M` vol-adj momentum + Low-Vol + FIP + `52W-High` proximity | **CAPM Residual Mom (`12-1M`, `6-1M`) + Intermediate Mom (`12-7M`) + Capital Gains Overhang (`CGO 126D` via VWAP) + Betting Against Beta (`-Vasicek β`) + Low-Vol** | *Ilmanen; Blitz et al. (2011); Novy-Marx (2012); Kahneman & Thaler / Grinblatt & Han (2005); Frazzini & Pedersen (2014).* Strips free market beta from momentum, captures slow institutional repricing (`12-7M` was #1 OOS signal), replaces weak 52W-high gauge with real investor disposition overhang (`+1.69%/yr` over 8.8Y), and adds crisis-resilient low-beta tilt (`+1.69%/yr` in 2017–2021). |
+| **ML Target & Feature Hygiene** | Raw excess return (`stock - NIFTY`), 19 features fed identically to Ridge & HGB | **Vasicek Beta-Adjusted Residual Sharpe target** (`(r_i - β_vasicek · r_mkt) / vol`); pruned 3 noisy/collinear features (`sec_rel_126d`, `vol_ratio_5_20`, `macro_tailwind_brent`); excluded date-constant macro cols from linear **Ridge only** (kept in **HGB**) | Stops ML from confusing risky high-beta bull leverage with genuine stock-selection skill (`2F Pure Alpha +4.57% → +8.24%` while lowering Market Beta `0.59 → 0.49` and Size Beta `0.80 → 0.72`). Preserves `HGB` (verified #1 OOS ranker). |
+| **Momentum Crash Defense** | Static prior weights in all regimes | **Daniel & Moskowitz (2016) Bear-Rebound Crash Damper:** when `NIFTY 252D < 0` & `VIX ≥ 19`, blends 50% of prior toward defensive `BAB + Low-Vol + Residual Mom` | Directly shields against 2009/2020-style bear-market snapbacks where beaten-down high-beta junk rallies sharply and raw momentum crashes. |
+| **Position Sizing (`hrp_allocator.py`)** | Ad-hoc `1 / (vol × (1 + avg_corr))` heuristic | **López de Prado (2016) Hierarchical Risk Parity (`HRP`)** on 126D Ledoit-Wolf shrunk covariance + concentration caps | Groups correlated stocks like a family tree and allocates risk across *clusters* rather than names. Lifted 2022 bear-market return (`+4.1% → +14.8%`) and beat `V6` in **9/9** parameter cells. |
+| **Accounting, Audit & Live Parity** | 0% RF Sharpe, flat `15 bps` backtest cost, single-sleeve paper tracking | **Exact Indian statutory NSE delivery costs + ADV impact + FIFO STCG/LTCG (`20.8% / 13.0%`) + `NIFTYBEES.NS` TRI + Excess `SR(6.2% RF)` + 2-Factor Pure Alpha + 4-tranche `paper_sleeves` + `2%` ADV order warning + corrected DSR & CPCV/PBO** | Eliminates backtest-vs-live illusion so every reported figure is real after-tax, after-cost, risk-free-adjusted alpha. |
+| **Phase 2 Free PIT Pipelines (`pit_fundamentals.py`)** | Non-PIT restated Yahoo fundamentals (unsafe for historical backtests) | **100% Free:** Day-1 immutable SQLite `pit_fundamentals_history` snapshot logger (runs automatically on sync) + NSE Bhavcopy historical delivery parser/backfill + BSE/NSE quarterly XBRL parser (`+2` trading-day lag) | Builds a strictly zero-lookahead **Value (`FCF/EV`, `E/P`) + Gross Profitability (`GP/Assets`) + Low Accruals** sleeve (*Asness, Moskowitz & Pedersen 2013; Novy-Marx 2013; Sloan 1996*) to structurally hedge future multi-quarter momentum droughts like `2025–2026`. *(Logging from Day 1; does not alter V7 stock picks until sufficient PIT history accumulates.)* |
+
+### 7.2 `V7` Verified 5-Gate Promotion Scorecard (`NIFTYBEES.NS` TRI, Statutory Costs & FIFO Post-Tax)
+
+| Gate / Audit Test | Clean `V6` (`CorrPen`) | **`V7` (`Book Hybrid + HRP`)** | Verdict |
+| :--- | :---: | :---: | :---: |
+| **Gate 1 — Core OOS (`2021–2026`, `NIFTYBEES` TRI `+9.06%` / Post-Tax `+8.25%`)** | `+23.40%` (**Post-Tax `+20.91%`**) · `SR(6.2%) 1.21` · `MaxDD -9.90%` · `2F Alpha +4.57%` | **`+26.54%`** (**Post-Tax `+23.70%`**) · **`SR(6.2%) 1.50`** · `MaxDD -12.18%` · **`2F Alpha +8.24%`** | **PASS** |
+| **Gate 2A — 8.8Y Multi-Cycle Prior (`2017–2026`, incl. 2018 NBFC & 2020 COVID)** | Baseline across 9 `(Top-K × Rebalance)` cells | **Won `9/9` CAGR & `9/9` `SR(6.2%)`** (`+2.80%` to `+5.96%/yr` over `V6`) | **PASS** |
+| **Gate 2B — 19Y Multi-Cycle (`2007–2026`, incl. 2008 GFC, 2009 rebound, 2011 bear)** | `+12.61%` (Post-Tax `+12.35%`) · `SR 1.00` · `2F Alpha +3.44%` | **`+12.86%`** (`BookFIP`: **`+13.03%`**) · **`SR 1.03–1.06`** · **`2F Alpha +3.52%–+3.80%`** | **PASS** |
+| **Gate 2C — 17 Real NSE Fallen Angels** *(`YESBANK -95%`, `ZEEL -88%`, `ATGL -86%`, `IDEA -84%`, etc.)* | `+20.57%` (**Post-Tax `+18.27%`**) · `SR 1.06` · `2F Alpha +5.05%` | **`+27.79%`** (**Post-Tax `+24.57%`**) · **`SR 1.59`** · **`2F Alpha +11.53%`** | **PASS** |
+| **Gate 3 — Multiple-Testing Rigor** *(Corrected Bailey–López de Prado DSR `N=50, RF=6.2%` & CPCV PBO)* | `DSR = 92.51%` | **`DSR = 98.15%`** · `CPCV PBO (V6+V7 18 configs) = 25.71%` (`18/70` splits, med logit `+0.656`) | **DSR PASS / PBO 25.7%** |
+| **Gate 4 — Stability & Extreme Friction** *(9-cell OOS plateau + `50 bps/side` = `100 bps` RT)* | `50bps`: `+17.09%` Post-Tax · `SR 0.98` | **`9/9` OOS Plateau Wins** · `50bps`: **`+22.10%` Post-Tax · `SR 1.39` · `+15.82%/yr` excess** | **PASS** |
+| **Gate 5 — Live Integrity & Suite** | — | **`27/27` pytest passed** · `0` ETF leaks · `₹10.10 L` paper ledger migrated cleanly to 4 sleeves | **PASS** |
+
+### 7.3 `V7` Projected Median CAGR & Realistic Live Expectations
+- **10,000-Path 5-Year Block-Bootstrap Monte Carlo** *(20-day stationary blocks from `V7`'s live `2021–2026` OOS returns)*:
+  - **Median (`P50`) Pre-Tax CAGR:** **`+26.2%`** *(10th–90th percentile: `+16.7%` to `+36.9%`, vs. NIFTY 50 TRI median `+9.0%`)*
+  - **Median (`P50`) FIFO Post-Tax CAGR:** **`+23.4%`** *(10th–90th percentile: `+14.9%` to `+33.0%`)*
+  - **Median Max Drawdown:** **`-11.2%`** *(1-in-10 adverse path: `-15.8%`)*
+- **Honest Real-World Cycle Expectation (Budget on This, Not the Bootstrap Peak):**
+  - Across the full `8.8-year` cycle (`2017–2026`), `V7`'s zero-parameter prior averaged **`~+21.6%` pre-tax (`~+19%` post-tax)**.
+  - Applying a prudent `30–40%` real-world haircut for future momentum droughts (like `2025–2026`), crowding, and execution friction yields a **conservative, realistic 5–10 year expectation of `~+16% to +20%` pre-tax (`~+14% to +17%` net post-tax CAGR)** — still beating NIFTY 50 TRI (`~+9% to +12%`) with substantially shallower drawdowns.
+
+### 7.4 `V7` Research Graveyard (Canonical Textbook Ideas Tested & Rejected on India NSE)
+
+| Idea Tested | Textbook Source | Exact Empirical Verdict on Live NSE Data (Why We Rejected It) |
+| :--- | :--- | :--- |
+| **Drop `HGB` / Heavy Regularization / 4Y Exp Decay / Blind Monotonic HGB** | Standard ML regularization advice | **`z_hgb` is the #1 strongest OOS ranker** (`IC +0.0612, t=+2.22`). Dropping HGB cut CAGR `-1.96%/yr`; 4Y decay cut `-1.27%/yr` (forgot 2018–2020 bear data); blind monotonic constraints cut `-0.64%/yr`. |
+| **`sklearn.LedoitWolf` inside V6's 60D Scalar Vol Target** | Ledoit & Wolf (2004 *JMVA*) | `V6` never inverts `cov_60`, and `sklearn`'s zero-correlation shrinkage underestimated long-only equity variance, hurting CAGR (`-0.37%/yr`), `SR` (`1.30 → 1.25`), and MaxDD (`-9.99% → -10.36%`). *(Use `LedoitWolf` inside **HRP**, NOT inside the 60D scalar vol target.)* |
+| **Symmetric Mid-Cycle Re-Entry** | Eliminating one-way de-risking | Staggered 4-tranche rebalancing already re-enters 1 sleeve every 10 days; mid-cycle re-entry got whipsawed, **worsened MaxDD `-2.52%`** (`-9.99% → -12.51%`), and inflated turnover `+50%`. |
+| **Global Dollar / US-10Y Squeeze (`DX-Y.NYB`, `^TNX`)** | Hélène Rey (2015) *Global Financial Cycle* | Zero predictive power on India `2017–2026` (`p > 0.85`); post-2017 `₹25,000+ Cr/mo` domestic SIP flows decoupled India from classic EM USD squeezes. |
+| **Double-Orthogonalized Amihud Illiquidity** | Amihud (2002) | Looked positive on surviving stocks (`+0.0339`), but collapsed to **`-0.0050 IC (t=-0.40)` on the 17 Fallen Angels** — proven survivorship trap (picked distressed illiquid blowups). |
+| **EWMA(0.94) / 21D Fast Vol Target, `GOLDBEES` TSMOM (45/15), Brent Mean-Reversion** | Fast vol targeting & macro trend | Hurt Calmar/MaxDD or had `t = -0.56` OOS noise (`2021–2026`); pruned for parsimony. |
