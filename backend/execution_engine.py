@@ -184,6 +184,7 @@ def generate_rebalance_ticket(
     risk_profile: str = "balanced",
     skip_earnings_blackout: bool = False,
     enforce_smart_money_shield: bool = True,
+    ltcg_cliff_guard: bool = True,
     current_holdings: list[dict[str, Any]] | None = None,
     cost_bps: float = DEFAULT_COST_BPS,
     use_statutory_costs: bool = True,
@@ -204,13 +205,16 @@ def generate_rebalance_ticket(
     latest_adv: dict[str, float] = mkt["latest_adv"]
     latest_tradable: dict[str, bool] = mkt["latest_tradable"]
 
+    delivery_telemetry: dict[str, Any] = {}
     try:
         from .money_signals import evaluate_balance_sheet_shield, get_money_signals_summary
 
         ms_snap = get_money_signals_summary(db)
         deliv_map = ms_snap.get("stock_delivery_map", {})
+        delivery_telemetry = ms_snap.get("delivery_regime_telemetry", {})
     except Exception:
         deliv_map = {}
+        delivery_telemetry = {}
         evaluate_balance_sheet_shield = None  # type: ignore[assignment]
 
     macro = compute_current_macro_regime(db)
@@ -228,6 +232,13 @@ def generate_rebalance_ticket(
         if dm:
             deliv_pct = dm.get("deliv_pct")
             deliv_20d_pct = dm.get("deliv_20d_pct", deliv_pct)
+            deliv_turn_20d_cr = dm.get("deliv_turnover_20d_cr")
+            t2t_suspected = bool(dm.get("t2t_suspected", False)) or (
+                deliv_20d_pct is not None and float(deliv_20d_pct) >= 98.0
+            )
+            low_deliv_turnover = bool(dm.get("low_deliv_turnover", False)) or (
+                deliv_turn_20d_cr is not None and float(deliv_turn_20d_cr) > 0.0 and float(deliv_turn_20d_cr) < 2.0
+            )
             shield_status = dm.get("shield_status", "Clean")
             shield_flags = dm.get("shield_flags", [])
         else:
@@ -238,6 +249,9 @@ def generate_rebalance_ticket(
             )
             deliv_pct = None
             deliv_20d_pct = None
+            deliv_turn_20d_cr = None
+            t2t_suspected = False
+            low_deliv_turnover = False
             shield_status = sh["status"]
             shield_flags = sh["flags"]
 
@@ -260,9 +274,17 @@ def generate_rebalance_ticket(
                 "earnings_blackout": dte is not None and 0 <= dte <= 5,
                 "deliv_pct": deliv_pct,
                 "deliv_20d_pct": deliv_20d_pct,
+                "deliv_turnover_20d_cr": deliv_turn_20d_cr,
+                "t2t_suspected": t2t_suspected,
+                "low_deliv_turnover": low_deliv_turnover,
                 "shield_status": shield_status,
                 "shield_flags": shield_flags,
-                "smart_money_blocked": (deliv_20d_pct is not None and float(deliv_20d_pct) < 35.0) or shield_status == "Risk",
+                "smart_money_blocked": (
+                    (deliv_20d_pct is not None and float(deliv_20d_pct) < 35.0)
+                    or t2t_suspected
+                    or low_deliv_turnover
+                    or shield_status == "Risk"
+                ),
             }
         )
 
@@ -304,28 +326,59 @@ def generate_rebalance_ticket(
         sec = row_by_sym[sym]["sector"]
         sec_counts[sec] = sec_counts.get(sec, 0) + 1
 
-    # Retain existing winners inside Top-30 hysteresis buffer (exit at rebalance if 20D delivery < 35% or balance-sheet Risk)
+    def _smart_money_reasons(row: dict[str, Any]) -> list[str]:
+        reasons = []
+        if row["deliv_20d_pct"] is not None and float(row["deliv_20d_pct"]) < 35.0:
+            reasons.append(f"Low 20D NSE Delivery ({row['deliv_20d_pct']:.1f}% < 35%)")
+        if row.get("t2t_suspected"):
+            reasons.append(f"T2T / ASM Surveillance Trap (20D Deliv {row['deliv_20d_pct']:.1f}% >= 98%)")
+        if row.get("low_deliv_turnover"):
+            reasons.append(f"Low Deliverable Value (₹{float(row.get('deliv_turnover_20d_cr') or 0.0):.2f} Cr < ₹2 Cr/day)")
+        if row["shield_status"] == "Risk":
+            reasons.append("Balance-Sheet Risk (" + ", ".join(row["shield_flags"]) + ")")
+        return reasons
+
+    ltcg_cliff_retained: list[dict[str, Any]] = []
+
+    def _is_near_ltcg_cliff(sym: str) -> tuple[bool, int]:
+        if not ltcg_cliff_guard or sym not in held_map:
+            return False, 0
+        h = held_map[sym]
+        if latest_px.get(sym, 0.0) <= float(h.get("avg_cost", 0.0)):
+            return False, 0
+        try:
+            buy_d = datetime.strptime(str(h["entry_date"])[:10], "%Y-%m-%d").date()
+            cur_d = datetime.strptime(str(latest_date)[:10], "%Y-%m-%d").date()
+            age = (cur_d - buy_d).days
+            return (320 <= age < 365), age
+        except Exception:
+            return False, 0
+
+    # Retain existing winners inside Top-30 hysteresis buffer (or profitable 320-364d near-LTCG cliff inside Top-60),
+    # exiting at rebalance if delivery/T2T/turnover/balance-sheet shield trips.
     for sym in sorted(held_map.keys(), key=lambda s: row_by_sym.get(s, {}).get("rank", 999)):
-        if sym not in row_by_sym or row_by_sym[sym]["rank"] > rank_buffer or not _can_add(sym):
+        if sym not in row_by_sym or not _can_add(sym):
             continue
         r_held = row_by_sym[sym]
+        near_cliff, hold_age = _is_near_ltcg_cliff(sym)
+        in_buffer = r_held["rank"] <= rank_buffer or (near_cliff and r_held["rank"] <= max(rank_buffer, 60))
+        if not in_buffer:
+            continue
         if enforce_smart_money_shield and r_held["smart_money_blocked"]:
-            reasons = []
-            if r_held["deliv_20d_pct"] is not None and float(r_held["deliv_20d_pct"]) < 35.0:
-                reasons.append(f"Low 20D NSE Delivery ({r_held['deliv_20d_pct']:.1f}% < 35%)")
-            if r_held["shield_status"] == "Risk":
-                reasons.append("Balance-Sheet Risk (" + ", ".join(r_held["shield_flags"]) + ")")
             skipped_smart_money.append(
                 {
                     "symbol": sym,
                     "rank": r_held["rank"],
                     "deliv_pct": r_held["deliv_pct"],
                     "deliv_20d_pct": r_held["deliv_20d_pct"],
+                    "deliv_turnover_20d_cr": r_held.get("deliv_turnover_20d_cr"),
                     "shield_status": r_held["shield_status"],
-                    "reason": "EXIT — " + " + ".join(reasons),
+                    "reason": "EXIT — " + " + ".join(_smart_money_reasons(r_held)),
                 }
             )
             continue
+        if r_held["rank"] > rank_buffer and near_cliff:
+            ltcg_cliff_retained.append({"symbol": sym, "rank": r_held["rank"], "holding_days": hold_age})
         _add(sym)
 
     for r in ranked_rows:
@@ -348,19 +401,15 @@ def generate_rebalance_ticket(
             )
             continue
         if enforce_smart_money_shield and r["smart_money_blocked"]:
-            reasons = []
-            if r["deliv_20d_pct"] is not None and float(r["deliv_20d_pct"]) < 35.0:
-                reasons.append(f"Low 20D NSE Delivery ({r['deliv_20d_pct']:.1f}% < 35%)")
-            if r["shield_status"] == "Risk":
-                reasons.append("Balance-Sheet Risk (" + ", ".join(r["shield_flags"]) + ")")
             skipped_smart_money.append(
                 {
                     "symbol": sym,
                     "rank": r["rank"],
                     "deliv_pct": r["deliv_pct"],
                     "deliv_20d_pct": r["deliv_20d_pct"],
+                    "deliv_turnover_20d_cr": r.get("deliv_turnover_20d_cr"),
                     "shield_status": r["shield_status"],
-                    "reason": " + ".join(reasons),
+                    "reason": " + ".join(_smart_money_reasons(r)),
                 }
             )
             continue
@@ -672,6 +721,8 @@ def generate_rebalance_ticket(
         "strategy_id": STRATEGY_ID_EXECUTION,
         "as_of_date": latest_date,
         "data_freshness": freshness,
+        "delivery_regime_telemetry": delivery_telemetry,
+        "ltcg_cliff_retained": ltcg_cliff_retained,
         "config": {
             "capital_inr": round(capital_inr, 2),
             "top_k": top_k,
@@ -690,6 +741,10 @@ def generate_rebalance_ticket(
             "enforce_smart_money_shield": enforce_smart_money_shield,
             "delivery_shield_window_days": 20,
             "delivery_shield_threshold_pct": 35.0,
+            "delivery_t2t_cap_pct": 98.0,
+            "min_deliv_turnover_cr": 2.0,
+            "ltcg_cliff_guard": ltcg_cliff_guard,
+            "reserve_tax_note": "Post-Budget 2024: Direct Arbitrage Fund (>65% equity) taxed at 20.8% STCG / 13.0% LTCG vs LIQUIDCASE debt ETF at 31.2% slab rate.",
             "cost_model": "indian_statutory_delivery_adv" if use_statutory_costs else "flat_bps",
             "cost_bps": cost_bps,
         },

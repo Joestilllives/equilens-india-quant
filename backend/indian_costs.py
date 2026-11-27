@@ -36,10 +36,12 @@ SEBI_TURNOVER_RATE = 0.000001           # ₹10 per crore (0.0001%)
 GST_RATE = 0.18                         # 18% GST on brokerage + exchange + SEBI fees
 DEFAULT_DP_SELL_CHARGE_INR = 15.93      # CDSL/NSDL DP charge incl. 18% GST per sell scrip-day
 
-# Indian Capital Gains Tax Rates (incl. 4% Health & Education Cess)
-INDIA_STCG_EFFECTIVE_RATE = 0.20 * 1.04   # 20.8%
-INDIA_LTCG_EFFECTIVE_RATE = 0.125 * 1.04  # 13.0%
-INDIA_LTCG_FY_EXEMPTION_INR = 125_000.0   # ₹1.25 Lakh annual exemption per Indian FY
+# Indian Capital Gains Tax Rates (Finance Act 2024, incl. 4% Health & Education Cess)
+INDIA_STCG_EFFECTIVE_RATE = 0.20 * 1.04       # 20.8% (Equity & Arbitrage Funds < 365 days)
+INDIA_LTCG_EFFECTIVE_RATE = 0.125 * 1.04      # 13.0% (Equity & Arbitrage Funds >= 365 days, Gold ETF >= 365 days)
+INDIA_LTCG_FY_EXEMPTION_INR = 125_000.0       # ₹1.25 Lakh annual exemption per Indian FY
+INDIA_DEBT_SLAB_EFFECTIVE_RATE = 0.30 * 1.04  # 31.2% (30% marginal slab + 4% cess: LIQUIDCASE & <365d GOLDBEES)
+INDIA_ARBITRAGE_STCG_RATE = INDIA_STCG_EFFECTIVE_RATE  # 20.8% (Direct Arbitrage Fund >65% equity)
 
 
 def indian_financial_year(date_str: str) -> str:

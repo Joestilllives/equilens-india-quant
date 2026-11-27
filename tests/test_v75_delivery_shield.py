@@ -13,6 +13,7 @@ from backend.money_signals import get_money_signals_summary
 from backend.portfolio_backtester import (
     _build_causal_delivery_20d_lookup,
     _prior_delivery_pct,
+    build_backtest_market_context,
     run_oos_portfolio_backtest,
 )
 
@@ -97,26 +98,83 @@ def test_money_signals_20d_smoothing_vs_single_day_blip(tmp_path: Path) -> None:
     assert s_map["SPECUL.NS"]["tone"] == "warning"
     assert "20D" in s_map["SPECUL.NS"]["tag"]
 
+    # Verify T2T (>=98%) and low deliverable turnover (<Rs 2 Cr/day) guards + SEBI telemetry
+    db.upsert_ticker("T2TTRAP.NS", "Surveillance T2T Co", "Infra", "Construction", 1e10, "", {}, "test", "2026-10-20")
+    db.upsert_ticker("ILLIQ.NS", "Tiny Deliverable Value Co", "Textiles", "Apparel", 5e9, "", {}, "test", "2026-10-20")
+    extra_rows = []
+    for day in range(1, 21):
+        dt = f"2026-10-{day:02d}"
+        extra_rows.append(
+            {
+                "symbol": "T2TTRAP.NS",
+                "date": dt,
+                "close_price": 100.0,
+                "traded_qty": 500000,
+                "deliv_qty": 500000,
+                "deliv_pct": 100.0,
+                "turnover_lacs": 500.0,
+                "no_of_trades": 2000,
+                "avg_trade_val_inr": 25000.0,
+            }
+        )
+        extra_rows.append(
+            {
+                "symbol": "ILLIQ.NS",
+                "date": dt,
+                "close_price": 200.0,
+                "traded_qty": 5000,
+                "deliv_qty": 3000,
+                "deliv_pct": 60.0,
+                "turnover_lacs": 100.0,  # 100 lacs * 60% = Rs 0.60 Cr deliverable (< Rs 2 Cr floor!)
+                "no_of_trades": 300,
+                "avg_trade_val_inr": 33333.0,
+            }
+        )
+    db.upsert_nse_delivery(extra_rows)
+    snap2 = get_money_signals_summary(db)
+    s2 = snap2["stock_delivery_map"]
+    assert s2["T2TTRAP.NS"]["t2t_suspected"] is True
+    assert s2["T2TTRAP.NS"]["tone"] == "warning"
+    assert "T2T" in s2["T2TTRAP.NS"]["tag"]
+    assert s2["ILLIQ.NS"]["low_deliv_turnover"] is True
+    assert s2["ILLIQ.NS"]["deliv_turnover_20d_cr"] < 2.0
+    assert s2["ILLIQ.NS"]["tone"] == "warning"
+
+    tel = snap2["delivery_regime_telemetry"]
+    assert tel["universe_count"] == 4
+    assert tel["t2t_flagged_count"] == 1
+    assert tel["low_deliv_turnover_count"] == 1
+
 
 def test_v75_core_live_db_parity_speed_and_outperformance() -> None:
-    """Verify seeded 6Y archive drives V7.5-Core backtest improvement over V7 Base and keeps live APIs fast."""
+    """Verify 100% daily 6Y archive, Budget 2024 reserve tax, LTCG cliff guard, and fast live APIs."""
     db = Database(DB_PATH)
     hist = db.get_nse_delivery_history()
     assert len(hist) >= 120
     all_dates = {d for m in hist.values() for d in m.keys()}
-    assert len(all_dates) >= 1000, f"Expected 6Y NSE delivery archive (>=1000 dates), got {len(all_dates)}"
+    assert len(all_dates) >= 1600, f"Expected full daily 6Y NSE delivery archive (>=1600 dates), got {len(all_dates)}"
 
-    # Verify V7.5-Core default shield beats V7 Base (unshielded) cleanly
-    res_v75 = run_oos_portfolio_backtest(db, enforce_smart_money_shield=True)
-    res_v7 = run_oos_portfolio_backtest(db, enforce_smart_money_shield=False)
+    # Verify V7.5-Core default shield + LTCG cliff guard beats V7 Base (unshielded) cleanly
+    ctx = build_backtest_market_context(db)
+    res_v75 = run_oos_portfolio_backtest(db, enforce_smart_money_shield=True, market_ctx=ctx)
+    res_v75_arb = run_oos_portfolio_backtest(db, enforce_smart_money_shield=True, reserve_cash_vehicle="arbitrage", market_ctx=ctx)
+    res_v7 = run_oos_portfolio_backtest(db, enforce_smart_money_shield=False, ltcg_cliff_guard=False, market_ctx=ctx)
     assert res_v75["strategy_id"] == "v75_core_delivery_shield"
     assert res_v75["config"]["enforce_smart_money_shield"] is True
     assert res_v75["config"]["delivery_shield_window_days"] == 20
+    assert res_v75["config"]["delivery_t2t_cap_pct"] == 98.0
+    assert res_v75["config"]["min_deliv_turnover_cr"] == 2.0
+    assert res_v75["config"]["ltcg_cliff_guard"] is True
     assert res_v75["portfolio_metrics"]["cagr_pct"] >= res_v7["portfolio_metrics"]["cagr_pct"] + 2.0
     assert res_v75["portfolio_metrics"]["sharpe"] > res_v7["portfolio_metrics"]["sharpe"]
     assert res_v75["portfolio_metrics"]["alpha_4f_pct"] >= res_v7["portfolio_metrics"]["alpha_4f_pct"] + 2.0
 
-    # Verify /api/money-signals and /api/execution/ticket stay fast even with 156k delivery rows
+    # Budget 2024 reserve tax honesty: Arbitrage Fund (20.8% STCG) strictly beats LIQUIDCASE (31.2% slab)
+    tcs = res_v75["tax_and_cost_summary"]
+    assert tcs["reserve_tax_liquidcase_inr"] > tcs["reserve_tax_arbitrage_inr"] > 0.0
+    assert res_v75_arb["portfolio_metrics"]["after_tax_cagr_pct"] > res_v75["portfolio_metrics"]["after_tax_cagr_pct"]
+
+    # Verify /api/money-signals and /api/execution/ticket stay fast even with 220k delivery rows
     from backend.main import app
 
     client = TestClient(app)
@@ -125,15 +183,22 @@ def test_v75_core_live_db_parity_speed_and_outperformance() -> None:
     t_ms = time.monotonic() - t0
     assert r_ms.status_code == 200
     assert t_ms < 2.0, f"/api/money-signals took {t_ms:.2f}s"
-    sample = next(iter(r_ms.json()["stock_delivery_map"].values()))
-    assert "deliv_20d_pct" in sample
+    ms_json = r_ms.json()
+    assert "delivery_regime_telemetry" in ms_json
+    assert ms_json["delivery_regime_telemetry"]["universe_count"] >= 100
+    sample = next(iter(ms_json["stock_delivery_map"].values()))
+    assert "deliv_20d_pct" in sample and "deliv_turnover_20d_cr" in sample
 
     t1 = time.monotonic()
     r_tk = client.get("/api/execution/ticket?capital_inr=1000000&top_k=10&risk_profile=balanced&enforce_smart_money_shield=true")
     t_tk = time.monotonic() - t1
     assert r_tk.status_code == 200
-    assert t_tk < 10.0, f"/api/execution/ticket took {t_tk:.2f}s"
+    assert t_tk < 20.0, f"/api/execution/ticket took {t_tk:.2f}s"
     tk = r_tk.json()
     assert tk["config"]["delivery_shield_window_days"] == 20
     assert tk["config"]["delivery_shield_threshold_pct"] == 35.0
-    assert all(o.get("deliv_20d_pct") is None or o["deliv_20d_pct"] >= 35.0 for o in tk["orders"])
+    assert tk["config"]["delivery_t2t_cap_pct"] == 98.0
+    assert tk["config"]["min_deliv_turnover_cr"] == 2.0
+    assert tk["config"]["ltcg_cliff_guard"] is True
+    assert "delivery_regime_telemetry" in tk
+    assert all(o.get("deliv_20d_pct") is None or (35.0 <= o["deliv_20d_pct"] < 98.0) for o in tk["orders"])

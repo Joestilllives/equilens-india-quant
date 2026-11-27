@@ -17,6 +17,7 @@ Portfolio-level strictly out-of-sample Shortlist Backtester (EquiLens India V7 A
 from __future__ import annotations
 
 from bisect import bisect_left
+from datetime import datetime
 from typing import Any
 
 import numpy as np
@@ -42,7 +43,12 @@ from .hrp_allocator import (
     compute_hrp_weights,
 )
 from .india_structural_signals import build_causal_nse_four_factors, compute_iima_four_factor_alpha
-from .indian_costs import FifoTaxLedger, compute_indian_delivery_cost
+from .indian_costs import (
+    INDIA_ARBITRAGE_STCG_RATE,
+    INDIA_DEBT_SLAB_EFFECTIVE_RATE,
+    FifoTaxLedger,
+    compute_indian_delivery_cost,
+)
 
 INDIA_CASH_ANNUAL_YIELD = 0.062
 INDIA_CASH_DAILY_YIELD = (1.0 + INDIA_CASH_ANNUAL_YIELD) ** (1.0 / 252.0) - 1.0
@@ -139,14 +145,18 @@ def apply_drawdown_brake_and_gold_reserve(
     gold_idle_share: float = GOLDBEES_RESERVE_SHARE,
     cost_bps: float = DEFAULT_COST_BPS,
     enable_dd_brake: bool = True,
+    initial_capital: float = 1_000_000.0,
+    out_reserve_gains: dict[str, float] | None = None,
 ) -> np.ndarray:
-    """Strictly causal -10% own-portfolio drawdown brake (-6% release) + 70% LIQUIDCASE / 30% GOLDBEES reserve."""
+    """Strictly causal -10% own-portfolio drawdown brake (-6% release) + 70% Cash / 30% GOLDBEES reserve."""
     n = len(base_rets)
     out = np.zeros(n, dtype=float)
     eq_hist = np.ones(n + 1, dtype=float)
     peak = 1.0
     brake_on = False
     cost_rate = max(0.0, cost_bps) / 10000.0
+    liquid_gain_inr = 0.0
+    gold_gain_inr = 0.0
 
     for i in range(n):
         idle_w = float(idle_weights[i]) if i < len(idle_weights) else 0.0
@@ -154,12 +164,20 @@ def apply_drawdown_brake_and_gold_reserve(
         r_cash = INDIA_CASH_DAILY_YIELD
         r_gold = float(gold_inr_rets[i]) if (i < len(gold_inr_rets) and np.isfinite(gold_inr_rets[i])) else r_cash
 
-        r_day = r_base + (idle_w * gold_idle_share) * (r_gold - r_cash)
+        eq_start_inr = eq_hist[i] * float(initial_capital)
         if enable_dd_brake and brake_on:
             eq_w = max(0.0, 1.0 - idle_w)
             r_eq_part = r_base - idle_w * r_cash
+            def_w = idle_w + 0.5 * eq_w
             def_ret = (1.0 - gold_idle_share) * r_cash + gold_idle_share * r_gold
-            r_day = 0.5 * r_eq_part + (idle_w + 0.5 * eq_w) * def_ret
+            r_day = 0.5 * r_eq_part + def_w * def_ret
+        else:
+            def_w = idle_w
+            r_day = r_base + (idle_w * gold_idle_share) * (r_gold - r_cash)
+
+        if i > 0:
+            liquid_gain_inr += eq_start_inr * (def_w * (1.0 - gold_idle_share)) * r_cash
+            gold_gain_inr += eq_start_inr * (def_w * gold_idle_share) * r_gold
 
         out[i] = r_day
         eq_now = eq_hist[i] * (1.0 + r_day)
@@ -178,29 +196,75 @@ def apply_drawdown_brake_and_gold_reserve(
                 out[i] -= 0.35 * cost_rate
                 eq_hist[i + 1] = eq_hist[i] * (1.0 + out[i])
             brake_on = new_brake
+
+    if out_reserve_gains is not None:
+        out_reserve_gains["liquid_gain_inr"] = round(liquid_gain_inr, 2)
+        out_reserve_gains["gold_gain_inr"] = round(gold_gain_inr, 2)
     return out
 
 
 def _build_causal_delivery_20d_lookup(
-    deliv_hist: dict[str, dict[str, float]] | None,
+    deliv_hist: dict[str, dict[str, Any]] | None,
     window: int = 20,
-) -> dict[str, tuple[list[str], np.ndarray]]:
-    """Precompute sorted dates & trailing `window`-day rolling mean NSE delivery % per symbol."""
+) -> dict[str, tuple[list[str], np.ndarray, np.ndarray | None]]:
+    """Precompute sorted dates & trailing `window`-day rolling mean NSE delivery % (and Rs Cr deliverable value)."""
     if not deliv_hist:
         return {}
-    out: dict[str, tuple[list[str], np.ndarray]] = {}
+    out: dict[str, tuple[list[str], np.ndarray, np.ndarray | None]] = {}
     w = max(1, int(window))
     for sym, sym_map in deliv_hist.items():
         if not sym_map:
             continue
         dts = sorted(sym_map.keys())
-        vals = np.array([float(sym_map[d]) for d in dts], dtype=float)
+        first_v = sym_map[dts[0]]
+        if isinstance(first_v, tuple):
+            vals = np.array([float(sym_map[d][0]) for d in dts], dtype=float)
+            cr_vals = np.array([float(sym_map[d][1]) for d in dts], dtype=float)
+        else:
+            vals = np.array([float(sym_map[d]) for d in dts], dtype=float)
+            cr_vals = None
         csum = np.concatenate(([0.0], np.cumsum(vals)))
         idx = np.arange(len(vals))
         starts = np.maximum(0, idx - w + 1)
-        rolling = (csum[idx + 1] - csum[starts]) / (idx - starts + 1).astype(float)
-        out[sym] = (dts, rolling)
+        denom = (idx - starts + 1).astype(float)
+        rolling_dp = (csum[idx + 1] - csum[starts]) / denom
+        rolling_cr = None
+        if cr_vals is not None:
+            csum_cr = np.concatenate(([0.0], np.cumsum(cr_vals)))
+            rolling_cr = (csum_cr[idx + 1] - csum_cr[starts]) / denom
+        out[sym] = (dts, rolling_dp, rolling_cr)
     return out
+
+
+def _prior_delivery_metrics(
+    deliv_hist: dict[str, Any] | None,
+    sym: str,
+    dt: str,
+    window: int = 20,
+) -> tuple[float | None, float | None]:
+    """Return strictly prior-day (T-1) trailing `window`-day mean (deliv_pct, deliv_turnover_cr) before `dt`."""
+    if not deliv_hist or sym not in deliv_hist:
+        return None, None
+    entry = deliv_hist[sym]
+    if isinstance(entry, tuple):
+        dts = entry[0]
+        rolling_dp = entry[1]
+        rolling_cr = entry[2] if len(entry) >= 3 else None
+        pos = bisect_left(dts, dt) - 1
+        if pos < 0:
+            return None, None
+        cr_val = float(rolling_cr[pos]) if rolling_cr is not None else None
+        return float(rolling_dp[pos]), cr_val
+    prior_dates = sorted(d for d in entry.keys() if d < dt)
+    if not prior_dates:
+        return None, None
+    tail = prior_dates[-max(1, int(window)) :]
+    first_v = entry[tail[0]]
+    if isinstance(first_v, tuple):
+        dp = float(np.mean([float(entry[d][0]) for d in tail]))
+        cr = float(np.mean([float(entry[d][1]) for d in tail]))
+        return dp, cr
+    return float(np.mean([float(entry[d]) for d in tail])), None
 
 
 def _prior_delivery_pct(
@@ -210,20 +274,8 @@ def _prior_delivery_pct(
     window: int = 20,
 ) -> float | None:
     """Return strictly prior-day (T-1) trailing `window`-day mean NSE delivery % before `dt`, or None."""
-    if not deliv_hist or sym not in deliv_hist:
-        return None
-    entry = deliv_hist[sym]
-    if isinstance(entry, tuple) and len(entry) == 2:
-        dts, rolling = entry
-        pos = bisect_left(dts, dt) - 1
-        if pos < 0:
-            return None
-        return float(rolling[pos])
-    prior_dates = sorted(d for d in entry.keys() if d < dt)
-    if not prior_dates:
-        return None
-    tail = prior_dates[-max(1, int(window)) :]
-    return float(np.mean([float(entry[d]) for d in tail]))
+    dp, _ = _prior_delivery_metrics(deliv_hist, sym, dt, window=window)
+    return dp
 
 
 def _simulate_single_tranche(
@@ -255,8 +307,9 @@ def _simulate_single_tranche(
     tranche_capital: float = 250_000.0,
     stagger_initial_deployment: bool = True,
     use_statutory_costs: bool = True,
-    deliv_history: dict[str, dict[str, float]] | None = None,
+    deliv_history: dict[str, Any] | None = None,
     enforce_smart_money_shield: bool = False,
+    ltcg_cliff_guard: bool = False,
     weighting_mode: str = "hrp",
     hrp_alpha_tilt: float = 0.0,
     no_trade_band: float = 0.0,
@@ -422,13 +475,37 @@ def _simulate_single_tranche(
             def _passes_delivery_shield(sym: str, cur_dt: str) -> bool:
                 if not enforce_smart_money_shield:
                     return True
-                d_prev = _prior_delivery_pct(deliv_history, sym, cur_dt)
-                return d_prev is None or d_prev >= 35.0
+                d_prev, cr_prev = _prior_delivery_metrics(deliv_history, sym, cur_dt)
+                if d_prev is not None and (d_prev < 35.0 or d_prev >= 98.0):
+                    return False
+                if cr_prev is not None and cr_prev > 0.0 and cr_prev < 2.0:
+                    return False
+                return True
 
-            # Rank-Buffer hysteresis: hold existing winners while inside Top-30 buffer, tradable, and passing 20D delivery shield
+            def _near_ltcg_cliff(sym: str, cur_dt: str) -> bool:
+                if not ltcg_cliff_guard:
+                    return False
+                lots = tax_ledger.lots.get(sym)
+                if not lots:
+                    return False
+                cj = px_col.get(sym)
+                if cj is None:
+                    return False
+                px_cur = float(px_arr[pos, cj])
+                if not np.isfinite(px_cur) or px_cur <= lots[0].unit_cost_inr:
+                    return False
+                buy_d = datetime.strptime(lots[0].buy_date[:10], "%Y-%m-%d").date()
+                cur_d = datetime.strptime(cur_dt[:10], "%Y-%m-%d").date()
+                age = (cur_d - buy_d).days
+                return 320 <= age < 365
+
+            # Rank-Buffer hysteresis: hold existing winners while inside Top-30 buffer (or near 365d LTCG cliff if enabled), tradable, and passing 20D delivery/T2T/turnover shield
             for sym in list(current_weights.keys()):
+                in_buf = rank_map.get(sym, 999) <= rank_buffer or (
+                    rank_map.get(sym, 999) <= max(rank_buffer, 60) and _near_ltcg_cliff(sym, dt)
+                )
                 if (
-                    rank_map.get(sym, 999) <= rank_buffer
+                    in_buf
                     and _is_tradable(sym, dt)
                     and _passes_delivery_shield(sym, dt)
                     and _can_add(sym)
@@ -686,7 +763,11 @@ def build_backtest_market_context(db: Database) -> dict[str, Any]:
     four_factors_df = build_causal_nse_four_factors(
         prices_df, eval_bench_series.pct_change().fillna(0.0), annual_rf=0.062
     )
-    raw_deliv_hist = db.get_nse_delivery_history() if hasattr(db, "get_nse_delivery_history") else {}
+    raw_deliv_hist = (
+        db.get_nse_delivery_metrics_history()
+        if hasattr(db, "get_nse_delivery_metrics_history")
+        else (db.get_nse_delivery_history() if hasattr(db, "get_nse_delivery_history") else {})
+    )
     deliv_20d_lookup = _build_causal_delivery_20d_lookup(raw_deliv_hist, window=20)
     idx_loc = {d: i for i, d in enumerate(prices_df.index)}
 
@@ -733,6 +814,8 @@ def run_oos_portfolio_backtest(
     enable_dd_brake: bool = True,
     gold_reserve_share: float = GOLDBEES_RESERVE_SHARE,
     enforce_smart_money_shield: bool = True,
+    ltcg_cliff_guard: bool = True,
+    reserve_cash_vehicle: str = "liquidcase",
     oos_override: list[dict[str, Any]] | pd.DataFrame | None = None,
     market_ctx: dict[str, Any] | None = None,
     oos_by_date_override: dict[str, pd.DataFrame] | None = None,
@@ -789,8 +872,13 @@ def run_oos_portfolio_backtest(
 
     if enforce_smart_money_shield:
         deliv_history = ctx.get("deliv_20d_lookup")
-        if deliv_history is None and hasattr(db, "get_nse_delivery_history"):
-            deliv_history = _build_causal_delivery_20d_lookup(db.get_nse_delivery_history(), window=20)
+        if deliv_history is None:
+            raw_h = (
+                db.get_nse_delivery_metrics_history()
+                if hasattr(db, "get_nse_delivery_metrics_history")
+                else (db.get_nse_delivery_history() if hasattr(db, "get_nse_delivery_history") else {})
+            )
+            deliv_history = _build_causal_delivery_20d_lookup(raw_h, window=20)
     else:
         deliv_history = None
     eff_weighting = weighting_mode if inv_vol_weight else "equal"
@@ -836,6 +924,7 @@ def run_oos_portfolio_backtest(
             use_statutory_costs=use_statutory_costs,
             deliv_history=deliv_history,
             enforce_smart_money_shield=enforce_smart_money_shield,
+            ltcg_cliff_guard=ltcg_cliff_guard,
             weighting_mode=eff_weighting,
             hrp_alpha_tilt=hrp_alpha_tilt,
             no_trade_band=no_trade_band,
@@ -850,6 +939,7 @@ def run_oos_portfolio_backtest(
 
     # Equal-weighted daily return across staggered overlapping tranches + -10% Drawdown Brake & 70/30 Reserve
     blended_daily = np.mean(np.vstack(tranche_rets), axis=0)
+    reserve_gains: dict[str, float] = {"liquid_gain_inr": 0.0, "gold_gain_inr": 0.0}
     if regime_gate:
         blended_idle = np.mean(np.vstack(tranche_idles), axis=0)
         gold_rets_sim = gold_inr_ret_series.reindex(sim_dates).fillna(INDIA_CASH_DAILY_YIELD).to_numpy(dtype=float)
@@ -861,6 +951,8 @@ def run_oos_portfolio_backtest(
             gold_idle_share=gold_reserve_share,
             cost_bps=cost_bps,
             enable_dd_brake=enable_dd_brake,
+            initial_capital=initial_capital,
+            out_reserve_gains=reserve_gains,
         )
 
     equity = float(initial_capital)
@@ -914,7 +1006,20 @@ def run_oos_portfolio_backtest(
     tot_slip_cost = sum(a.get("total_slippage_inr", 0.0) for a in acct_list)
     max_part = max((a.get("max_participation_pct", 0.0) for a in acct_list), default=0.0)
 
-    final_port_post_tax = max(1.0, equity - tot_liq_cost - tot_real_stcg - tot_real_ltcg - tot_unr_stcg - tot_unr_ltcg)
+    liq_gain_pos = max(0.0, float(reserve_gains.get("liquid_gain_inr", 0.0)))
+    gold_gain_pos = max(0.0, float(reserve_gains.get("gold_gain_inr", 0.0)))
+    reserve_tax_liquidcase = liq_gain_pos * INDIA_DEBT_SLAB_EFFECTIVE_RATE + gold_gain_pos * INDIA_DEBT_SLAB_EFFECTIVE_RATE
+    reserve_tax_arbitrage = liq_gain_pos * INDIA_ARBITRAGE_STCG_RATE + gold_gain_pos * INDIA_DEBT_SLAB_EFFECTIVE_RATE
+    applied_reserve_tax = (
+        reserve_tax_arbitrage if str(reserve_cash_vehicle).lower() == "arbitrage" else reserve_tax_liquidcase
+    )
+
+    final_port_post_tax_equity_only = max(
+        1.0, equity - tot_liq_cost - tot_real_stcg - tot_real_ltcg - tot_unr_stcg - tot_unr_ltcg
+    )
+    final_port_post_tax_liquidcase = max(1.0, final_port_post_tax_equity_only - reserve_tax_liquidcase)
+    final_port_post_tax_arbitrage = max(1.0, final_port_post_tax_equity_only - reserve_tax_arbitrage)
+    final_port_post_tax = max(1.0, final_port_post_tax_equity_only - applied_reserve_tax)
 
     b_liq_cost = (
         0.0
@@ -1005,6 +1110,10 @@ def run_oos_portfolio_backtest(
             "enforce_smart_money_shield": enforce_smart_money_shield,
             "delivery_shield_window_days": 20,
             "delivery_shield_threshold_pct": 35.0,
+            "delivery_t2t_cap_pct": 98.0,
+            "min_deliv_turnover_cr": 2.0,
+            "ltcg_cliff_guard": ltcg_cliff_guard,
+            "reserve_cash_vehicle": reserve_cash_vehicle,
             "benchmark_symbol": eval_bench_sym,
             "benchmark_type": eval_bench_type,
             "initial_capital": initial_capital,
@@ -1020,8 +1129,19 @@ def run_oos_portfolio_backtest(
             "realized_stcg_tax_inr": round(tot_real_stcg, 2),
             "realized_ltcg_tax_inr": round(tot_real_ltcg, 2),
             "unrealized_liq_tax_inr": round(tot_unr_stcg + tot_unr_ltcg, 2),
+            "reserve_liquid_gain_inr": round(liq_gain_pos, 2),
+            "reserve_gold_gain_inr": round(gold_gain_pos, 2),
+            "reserve_tax_liquidcase_inr": round(reserve_tax_liquidcase, 2),
+            "reserve_tax_arbitrage_inr": round(reserve_tax_arbitrage, 2),
+            "applied_reserve_tax_inr": round(applied_reserve_tax, 2),
             "final_pre_tax_equity_inr": round(equity, 2),
+            "final_post_tax_equity_only_inr": round(final_port_post_tax_equity_only, 2),
+            "final_post_tax_liquidcase_inr": round(final_port_post_tax_liquidcase, 2),
+            "final_post_tax_arbitrage_inr": round(final_port_post_tax_arbitrage, 2),
             "final_post_tax_liquidation_inr": round(final_port_post_tax, 2),
+            "after_tax_cagr_equity_only_pct": round(((final_port_post_tax_equity_only / initial_capital) ** (1.0 / years) - 1.0) * 100.0, 2),
+            "after_tax_cagr_liquidcase_pct": round(((final_port_post_tax_liquidcase / initial_capital) ** (1.0 / years) - 1.0) * 100.0, 2),
+            "after_tax_cagr_arbitrage_pct": round(((final_port_post_tax_arbitrage / initial_capital) ** (1.0 / years) - 1.0) * 100.0, 2),
             "benchmark_post_tax_liquidation_inr": round(final_bench_post_tax, 2),
             "max_adv_participation_pct": round(max_part, 4),
         },

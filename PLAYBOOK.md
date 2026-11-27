@@ -150,3 +150,64 @@ Everything built, tested, kept, or rejected after `V6` (`9d09dfb`) is summarized
 | **`V7` Canonical Finance Books (`feat/v7-book-research`)** | CAPM Residual Momentum (`12-1M`, `6-1M`), Novy-Marx `12-7M`, Grinblatt–Han `CGO 126D`, Frazzini–Pedersen `BAB` (`-Vasicek β`), Vasicek Residual Sharpe ML target, Daniel–Moskowitz Bear-Rebound Crash Damper, López de Prado `HRP` (`126D Ledoit-Wolf`), 4-tranche `paper_sleeves`, `2%` ADV cap guard, and Day-1 **100% free** PIT fundamental snapshot logger + NSE Bhavcopy + BSE/NSE XBRL parsers (`pit_fundamentals.py`). | **YES (Core Live Engine)** | Beat `V6` by `+2.79%/yr` Post-Tax on clean OOS, **`+6.30%/yr` Post-Tax on 17 real Indian crashes**, **`9/9`** over 8.8Y, won `19Y` (`2007–2026`), and beat **`50/50`** random permutations (`p=0.0196`). |
 | **`V8` Frontier Toolkit (`feat/v8-frontier-research`) — KEPT** | **IIMA 4-Factor Indian Alpha** (`MKT+SMB+HML+WML` wired into `portfolio_backtester.py`), **Indian Forensic Governance & QMJ+Value** (`forensic_quality_sleeve.py`), **SEBI Shareholding `+2d` lag parser** (`india_structural_signals.py`), **RBI DBIE Liquidity telemetry** (`india_liquidity_regime.py`), **Carver Multi-Sleeve Combiner** (`multi_sleeve_allocator.py`), and opt-in **`₹1 Cr+` Boyd Convex Optimizer** (`convex_optimizer.py`). | **YES (Reporting & Future Opt-In Toolkit)** | Proved `V7`'s **`+7.05%` to `+8.53%/yr` 4-Factor Indian Alpha**; forensic/QMJ/Carver/Convex modules sit ready without disturbing `V7`'s locked `HRP` + `6-Gauge` defaults. |
 | **`V8` Price/Regime Tweaks — REJECTED** | Smooth Sigmoid Regime Gate (`SR 1.50 → 1.34`, `MaxDD -12.2% → -13.5%`), Extra India Liquidity Gate (redundant), `V8-FullAFML` (`-1.68%` on 17 Fallen Angels), and `V8-TopRank` (`fwd_rank²`, `PBO 55.7%`, trailed `-0.29%` on 17 Fallen Angels). | **NO (Logged in Graveyard)** | Failed to beat `V7` cleanly on real Indian crashes — kept out of live execution to prevent overfitting. |
+
+
+---
+
+## 8. Live Production `V7.5-Core` Upgrade, Blind-Spot Red-Team Audit & Future Watchlist
+
+**Live Branch:** `feat/v7-book-research` (`github.com/Joestilllives/equilens-india-quant`)  
+**Status:** **LIVE PRODUCTION DEFAULT (`strategy_id: v75_core_delivery_shield`)** — `V7` Canonical Finance + HRP engine upgraded with a strictly `T-1` causal **20-Day Official NSE Delivery Shield (`35% <= deliv_20d < 98%`, Deliverable Value `>= ₹2 Cr/day`)**, **Indian `320–364d` LTCG Tax-Cliff Guard**, **Post-Budget 2024 Reserve Tax Honesty**, and **SEBI Delivery Regime-Drift Telemetry**.
+
+### 8.1 What Changed from Frozen `V7` (`34e7747`) → Live `V7.5-Core`
+1. **Complete 100% Daily 7-Year Official NSE Delivery Archive (`2020-01-01 → 2026-11-26`):**
+   - Seeded **`220,229` rows across `1,700` consecutive NSE trading days** (`250 / 247 / 246 / 245 / 245 / 246 / 221` days/year) directly from `nsearchives.nseindia.com` into `data/equilens_india.db` (`nse_delivery`, NOT committed to git).
+   - Replaced noisy 1-day delivery prints with a **strictly `T-1` causal 20-day trailing mean (`deliv_20d_pct`)** across `money_signals.py`, `execution_engine.py`, and `portfolio_backtester.py` (precomputed O(log N) lookup in `build_backtest_market_context`).
+2. **Full Backtest ↔ Live Parity on Retention + Entry + T2T & Deliverable Value Guards:**
+   - **Retention + Entry Parity:** The delivery shield applies to **both** new buys AND Top-30 hysteresis rebalance retention — exiting an existing momentum winner at rebalance if its 20D institutional delivery collapses `< 35%` into retail/F&O intraday churn *(this exit rule alone delivers `~+2.5%/yr` CAGR and cuts MaxDD by `~1.5–2.0%`)*.
+   - **T2T / ASM Surveillance Trap Guard (`deliv_20d_pct >= 98%`):** NSE Trade-for-Trade (T2T) / ASM / ESM surveillance stocks mechanically print `100%` delivery because intraday trading is prohibited. Explicit `>= 98%` exclusion future-proofs the shield if the universe is ever broadened to mid/smallcaps.
+   - **Rupee Deliverable Turnover Floor (`>= ₹2 Cr/day`):** Prevents illiquid, tiny-volume stocks with high percentage delivery from passing the shield (`turnover_lacs * (deliv_pct / 100) / 100 >= 2.0`).
+3. **Indian `320–364d` LTCG Tax-Cliff Holding Guard (`ltcg_cliff_guard=True`):**
+   - If an existing profitable holding drops outside the Top-30 buffer (still inside Top-60, tradable, and passing all delivery/T2T/balance-sheet shields) while its oldest FIFO lot is aged **`320–364` days**, hold it across 1 extra rebalance cycle so gains qualify for **`13.0%` LTCG** instead of **`20.8%` STCG**.
+   - Improved **every** metric simultaneously (`CAGR +28.59% → +28.91%`, Honest Post-Tax `+23.92% → +24.44%`, `SR(6.2%) 1.75 → 1.77`, `MaxDD -10.64% → -10.56%`, `4F Alpha +10.05% → +10.22%`, `STCG` tax cut by `₹13.7k` per `₹10 L`).
+4. **Post-Budget 2024 Reserve Tax Honesty (`indian_costs.py` + `portfolio_backtester.py`):**
+   - Under India's **Finance Act 2024 (effective July 23, 2024)**, debt ETFs (`LIQUIDCASE`, `>65%` debt) and `< 12m` Gold ETFs (`GOLDBEES`) are taxed at the investor's **marginal income tax slab rate (`31.2%` = 30% + 4% cess)**, whereas a **Direct-Plan Arbitrage Mutual Fund (`>65%` hedged equity)** is taxed as equity (**`20.8%` STCG / `13.0%` LTCG `≥ 12m`**).
+   - `portfolio_backtester.py` now tracks exact daily rupee reserve gains (`liquid_gain_inr`, `gold_gain_inr`) and deducts reserve taxes directly inside `after_tax_cagr_pct`, reporting both `after_tax_cagr_liquidcase_pct` and `after_tax_cagr_arbitrage_pct`.
+5. **SEBI Delivery Regime-Drift Telemetry (`money_signals.py` + `execution_engine.py`):**
+   - Surfaces `delivery_regime_telemetry` (`universe_count`, `below_35_count`, `below_35_pct`, `median_20d_deliv_pct`, `p25_20d_deliv_pct`, `t2t_flagged_count`, `low_deliv_turnover_count`, `drift_status`) on `/api/money-signals` and `/api/execution/ticket`, raising `drift_status: "warning"` if `below_35_pct < 5.0%`.
+
+### 8.2 Verified Production Scorecard (100% Daily Archive, `2021-07 → 2026-09`, `K=10`, `40D`, Exact Statutory Costs + FIFO Equity & Reserve Tax)
+
+| Production Engine | Pre-Tax CAGR | Honest Post-Tax (`LIQUIDCASE 31.2%`) | Honest Post-Tax (`Arbitrage 20.8%`) | Excess `SR(6.2%)` | MaxDD | IIMA 4-Factor Alpha (`t`) |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Frozen `V6` Base** *(Unshielded)* | `+23.40%` | `~+19.6%` *(eq-only `+20.91%`)* | `~+19.8%` | `1.21` | `-9.90%` | `+3.01%` (`t=+0.9`) |
+| **Frozen `V7` Base** *(Unshielded)* | `+26.54%` | `+22.22%` *(eq-only `+23.70%`)* | `+22.39%` | `1.50` | `-12.18%` | `+7.05%` (`t=+1.98`) |
+| **`V7.5-Core` (100% Daily + T2T/₹2Cr, `LTCG=OFF`)** | `+28.59%` | `+23.92%` *(eq-only `+25.36%`)* | `+24.09%` | `1.75` | `-10.64%` | `+10.05%` (`t=+2.89`) |
+| **Live `V7.5-Core` (+ `320–364d` LTCG Guard — DEFAULT)** | **`+28.91%`** | **`+24.44%`** | **`+24.61%`** | **`1.77`** | **`-10.56%`** | **`+10.22%` (`t=+2.95`)** |
+
+* **Independent Robustness Audits (Overfitting Score: `1.5 / 10`):**
+  - `35%` threshold was pre-registered in `V6` before downloading the 6Y archive; flat plateau across `25%–45%` and `T-5` extra lag (`+29.03%`, `SR 1.75`); wins `5/6` calendar years; clears `N=80` cumulative DSR (`99.77%`).
+  - Swept **`9/9`** `(Top-K × Rebalance)` plateau cells on CAGR & `SR(6.2%)` (`8/9` MaxDD); beat `V7` on **17 Real NSE Fallen Angels** (`+25.85%` vs `+24.46%`, `SR 1.54` vs `1.37`) and blindly on **126 Unseen Indian Smallcaps** (`+18.26%` vs `+16.89%`, `SR 0.98` vs `0.86`).
+* **Realistic Live Budget (5–10 Year Cycle, Net Post-Tax):** Expect **`~16% to 19%` net post-tax CAGR** (conservative choppy decade `12%–15%`, strong bull cycle `22%–26%`), with occasional `-10% to -18%` drawdowns and 6–12 month flat stretches.
+
+### 8.3 What Was Intentionally KEPT OUT of Live Production (`V7.5` Research Graveyard)
+- **`V7.5-Full` (`Screener.in` PIT Value Dual-Sleeve + `264`-Stock Expansion):** Kept strictly on isolated research branch `feat/v75-frontier` (NOT promoted). Carried **`5.5–6 / 10`** overfitting/selection bias (pruned from 21 PIT signals down to 1, `Screener.in` consolidated restatement risk, current-survivor universe).
+- **Ledoit–Wolf QIS Nonlinear Shrinkage inside HRP:** `p=10, T=126` too low-dimensional; tied/trailed linear Ledoit–Wolf.
+- **KMZ (2024) RFF-Ridge, JKMP (2026) Signal Smoothing, Gârleanu–Pedersen Aim `0.65`:** Tied linear Ridge or hurt India Large/Midcap (`-1.7%/yr`) / Smallcaps.
+- **Self-Adaptive Bottom-20%/25% Cross-Sectional Delivery Percentile:** Tested against Static `<35%` and **trailed** on CAGR (`+28.66%–29.03%` vs `+29.42%`), FIFO Post-Tax, MaxDD (`-12.1% to -12.5%` vs `-10.3%`), and `2026 YTD` — because dropping the bottom 25% in 2025–2026 discards healthy `42%`-delivery stocks.
+
+### 8.4 Operational Watchlist for All Future Iterations (Do NOT Forget These!)
+1. **Watch SEBI Delivery Regime Drift (`below_35_pct`):**
+   - SEBI's Peak Margin (2021) + T+1 Settlement (2023) pushed NSE median delivery from **`34.4%` (`2020`) → `51.5%` (`2026`)**, shrinking `<35%` hit rate from `51.4%` (`2020`) down to **`5.3%` (`7 / 131` stocks as of Nov 2026)** — just above our **`5.0%`** warning line.
+   - **Action rule:** As long as `below_35_pct >= 5%`, keep Static `<35%` untouched. If future SEBI `T+0` settlement or further intraday curbs push `below_35_pct` persistently **below `5.0%`**, review switching to the pre-tested **`Hybrid (<35% OR Bottom-20%)`** rule (`SR 1.81`, `4F Alpha +10.74%`).
+2. **Use a Direct Arbitrage Fund for Live Idle Cash (Post-Budget 2024 Tax Edge):**
+   - If you are in the `30%` Indian tax slab, parking the `70%` defensive cash reserve in a **Direct-Plan Arbitrage Mutual Fund** (`20.8%` STCG / `13.0%` LTCG `≥ 12m`) instead of `LIQUIDCASE` (`31.2%` slab rate) saves `~₹12k–₹22k` per `₹10 L` (`₹1.2 L–₹2.2 L` per `₹1 Cr`) over 5 years *(trade-off: T+2/T+3 redemption vs instant ETF liquidity)*.
+   - Remember `< 12m GOLDBEES` flips are also taxed at `31.2%` slab rate; avoid unnecessary churn in the `30%` gold sleeve and do **not** assume 2021–2026's historic INR gold bull market (`+1.85%/yr` tailwind) will repeat every decade.
+3. **Never Run Unconstrained Deep ML on `N ≈ 130` Stocks:**
+   - Literature (small-universe Gu–Kelly–Xiu critiques) confirms high-capacity ML overfits `N ≈ 100` stock panels. Preserve the `50%` Canonical Multi-Factor Prior + strongly regularized linear `Ridge` + shallow `HGB` balance.
+4. **Never Expand to Smallcaps Without T2T/ASM & Circuit Protections:**
+   - Our liquid NIFTY 100/200 universe avoids static 5%/10% lower-circuit lockouts (most constituents are NSE F&O stocks with dynamic bands) and had `0.00%` T2T days. If ever expanding down-cap, keep both `deliv_20d < 98%` and `deliv_turnover_20d_cr >= 2.0` strictly enforced.
+5. **Respect Known Structural Trade-Offs (Do Not Over-Tweak):**
+   - **Drawdown Brake (`-10%/-6%`):** Can lag fast V-shaped bottoms (like March 2020), but proved essential in multi-year bears (`2008`: `-17%` vs NIFTY `-60%`). Keep as crisis insurance.
+   - **4-Tranche Staggering (`40D`):** Trades `~1.1%/yr` post-tax and `4×` FIFO lots vs 1-tranche in exchange for `-2.0%` shallower MaxDD and zero start-date timing luck (now partially recovered by the `320–364d` LTCG cliff guard).
+   - **Never touch `paper_*` tables** during upgrades (live paper ledger started `2026-11-20` at `₹10,00,000`, currently `₹10,10,032.98` across `10` positions / `4` sleeves) and **never commit `data/equilens_india.db`** to git.

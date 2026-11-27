@@ -338,6 +338,13 @@ def get_money_signals_summary(db: Database) -> dict[str, Any]:
         deliv_now = float(latest["deliv_pct"])
         deliv_20d_rows = rows_sorted[-20:]
         deliv_20d = float(np.mean([float(r["deliv_pct"]) for r in deliv_20d_rows]))
+        deliv_turn_cr_vals = [
+            (float(r.get("turnover_lacs", 0.0)) * (float(r["deliv_pct"]) / 100.0)) / 100.0
+            for r in deliv_20d_rows
+        ]
+        deliv_turn_20d_cr = float(np.mean(deliv_turn_cr_vals)) if deliv_turn_cr_vals else 0.0
+        t2t_suspected = deliv_20d >= 98.0
+        low_deliv_turnover = deliv_turn_20d_cr > 0.0 and deliv_turn_20d_cr < 2.0
         deliv_surge = deliv_now - avg_deliv
         ticket_ratio = float(latest["avg_trade_val_inr"]) / max(1.0, avg_ticket)
         turn_ratio = float(latest["turnover_lacs"]) / max(1.0, avg_turn)
@@ -355,8 +362,14 @@ def get_money_signals_summary(db: Database) -> dict[str, Any]:
             )
         )
 
-        if deliv_20d < 35.0:
+        if t2t_suspected:
+            tag = "T2T / ASM 100% Delivery Trap"
+            tone = "warning"
+        elif deliv_20d < 35.0:
             tag = "Low 20D Delivery / Intraday"
+            tone = "warning"
+        elif low_deliv_turnover:
+            tag = "Low Deliverable Value (<₹2Cr)"
             tone = "warning"
         elif deliv_now >= 55.0 and deliv_surge >= 5.0:
             tag = "High Delivery Surge"
@@ -377,6 +390,9 @@ def get_money_signals_summary(db: Database) -> dict[str, Any]:
             "deliv_pct": round(deliv_now, 1),
             "deliv_20d_pct": round(deliv_20d, 1),
             "deliv_obs_20d": len(deliv_20d_rows),
+            "deliv_turnover_20d_cr": round(deliv_turn_20d_cr, 2),
+            "t2t_suspected": t2t_suspected,
+            "low_deliv_turnover": low_deliv_turnover,
             "avg_deliv_pct": round(avg_deliv, 1),
             "deliv_surge_pct": round(deliv_surge, 1),
             "turnover_cr": round(float(latest["turnover_lacs"]) / 100.0, 2),
@@ -393,6 +409,32 @@ def get_money_signals_summary(db: Database) -> dict[str, Any]:
     universe_deals = [d for d in deals if d["symbol"] in tickers]
     all_top_deals = sorted(deals, key=lambda d: d["value_cr"], reverse=True)[:15]
 
+    # 4. SEBI Delivery Regime-Drift Telemetry (alerts if Peak Margin / T+1 / T+0 shifts push <35% hit rate below 5%)
+    d20_vals = [float(v["deliv_20d_pct"]) for v in stock_delivery.values()]
+    n_univ = len(d20_vals)
+    n_below_35 = sum(1 for x in d20_vals if x < 35.0)
+    below_35_pct = round((n_below_35 / max(1, n_univ)) * 100.0, 1) if n_univ else 0.0
+    n_t2t = sum(1 for v in stock_delivery.values() if v.get("t2t_suspected"))
+    n_low_turn = sum(1 for v in stock_delivery.values() if v.get("low_deliv_turnover"))
+    drift_alert = n_univ >= 30 and below_35_pct < 5.0
+    delivery_regime_telemetry = {
+        "universe_count": n_univ,
+        "below_35_count": n_below_35,
+        "below_35_pct": below_35_pct,
+        "median_20d_deliv_pct": round(float(np.median(d20_vals)), 1) if d20_vals else None,
+        "p25_20d_deliv_pct": round(float(np.percentile(d20_vals, 25)), 1) if d20_vals else None,
+        "t2t_flagged_count": n_t2t,
+        "low_deliv_turnover_count": n_low_turn,
+        "drift_status": "warning" if drift_alert else "healthy",
+        "drift_note": (
+            f"Only {below_35_pct:.1f}% of universe is below 35% 20D delivery — monitor for SEBI T+0 / margin regime drift."
+            if drift_alert
+            else f"{below_35_pct:.1f}% of universe below 35% 20D delivery (median {float(np.median(d20_vals)):.1f}%)."
+            if d20_vals
+            else "No NSE delivery history loaded."
+        ),
+    }
+
     return {
         "fii_positioning": {
             "latest": fii_latest,
@@ -405,6 +447,7 @@ def get_money_signals_summary(db: Database) -> dict[str, Any]:
             "midcap_vs_nifty_63d_pct": midcap_nifty_63d,
             "bank_vs_nifty_63d_pct": bank_nifty_63d,
         },
+        "delivery_regime_telemetry": delivery_regime_telemetry,
         "stock_delivery_map": stock_delivery,
         "delivery_interpretation_note": "Official NSE bhavcopy delivery % reflects settled delivery volume across all participants (institutional, promoter, and retail combined — participant breakdown is not published by NSE).",
         "top_accumulation": top_accum,

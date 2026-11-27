@@ -1346,6 +1346,21 @@ class Database:
             out.setdefault(sym, {})[str(r["date"])[:10]] = float(r["deliv_pct"])
         return out
 
+    def get_nse_delivery_metrics_history(self) -> dict[str, dict[str, tuple[float, float]]]:
+        """Return {symbol: {date: (deliv_pct, deliv_turnover_cr)}} across all stored NSE delivery rows."""
+        out: dict[str, dict[str, tuple[float, float]]] = {}
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT symbol, date, deliv_pct, turnover_lacs FROM nse_delivery ORDER BY date ASC"
+            ).fetchall()
+        for r in rows:
+            sym = str(r["symbol"]).upper()
+            dp = float(r["deliv_pct"])
+            turn_lacs = float(r["turnover_lacs"] or 0.0)
+            deliv_cr = (turn_lacs * (dp / 100.0)) / 100.0
+            out.setdefault(sym, {})[str(r["date"])[:10]] = (dp, deliv_cr)
+        return out
+
     # ------------------------------------------------------------------
     # Phase 2: Strictly Immutable Point-In-Time (PIT) Fundamentals Store
     # ------------------------------------------------------------------
