@@ -227,6 +227,7 @@ def generate_rebalance_ticket(
         dm = deliv_map.get(sym)
         if dm:
             deliv_pct = dm.get("deliv_pct")
+            deliv_20d_pct = dm.get("deliv_20d_pct", deliv_pct)
             shield_status = dm.get("shield_status", "Clean")
             shield_flags = dm.get("shield_flags", [])
         else:
@@ -236,6 +237,7 @@ def generate_rebalance_ticket(
                 else {"status": "Clean", "flags": []}
             )
             deliv_pct = None
+            deliv_20d_pct = None
             shield_status = sh["status"]
             shield_flags = sh["flags"]
 
@@ -257,9 +259,10 @@ def generate_rebalance_ticket(
                 "next_earnings_date": next_e_dt,
                 "earnings_blackout": dte is not None and 0 <= dte <= 5,
                 "deliv_pct": deliv_pct,
+                "deliv_20d_pct": deliv_20d_pct,
                 "shield_status": shield_status,
                 "shield_flags": shield_flags,
-                "smart_money_blocked": (deliv_pct is not None and float(deliv_pct) < 35.0) or shield_status == "Risk",
+                "smart_money_blocked": (deliv_20d_pct is not None and float(deliv_20d_pct) < 35.0) or shield_status == "Risk",
             }
         )
 
@@ -301,10 +304,29 @@ def generate_rebalance_ticket(
         sec = row_by_sym[sym]["sector"]
         sec_counts[sec] = sec_counts.get(sec, 0) + 1
 
-    # Retain existing winners inside Top-30 hysteresis buffer
+    # Retain existing winners inside Top-30 hysteresis buffer (exit at rebalance if 20D delivery < 35% or balance-sheet Risk)
     for sym in sorted(held_map.keys(), key=lambda s: row_by_sym.get(s, {}).get("rank", 999)):
-        if sym in row_by_sym and row_by_sym[sym]["rank"] <= rank_buffer and _can_add(sym):
-            _add(sym)
+        if sym not in row_by_sym or row_by_sym[sym]["rank"] > rank_buffer or not _can_add(sym):
+            continue
+        r_held = row_by_sym[sym]
+        if enforce_smart_money_shield and r_held["smart_money_blocked"]:
+            reasons = []
+            if r_held["deliv_20d_pct"] is not None and float(r_held["deliv_20d_pct"]) < 35.0:
+                reasons.append(f"Low 20D NSE Delivery ({r_held['deliv_20d_pct']:.1f}% < 35%)")
+            if r_held["shield_status"] == "Risk":
+                reasons.append("Balance-Sheet Risk (" + ", ".join(r_held["shield_flags"]) + ")")
+            skipped_smart_money.append(
+                {
+                    "symbol": sym,
+                    "rank": r_held["rank"],
+                    "deliv_pct": r_held["deliv_pct"],
+                    "deliv_20d_pct": r_held["deliv_20d_pct"],
+                    "shield_status": r_held["shield_status"],
+                    "reason": "EXIT — " + " + ".join(reasons),
+                }
+            )
+            continue
+        _add(sym)
 
     for r in ranked_rows:
         if len(chosen) >= top_k:
@@ -327,8 +349,8 @@ def generate_rebalance_ticket(
             continue
         if enforce_smart_money_shield and r["smart_money_blocked"]:
             reasons = []
-            if r["deliv_pct"] is not None and float(r["deliv_pct"]) < 35.0:
-                reasons.append(f"Low NSE Delivery ({r['deliv_pct']:.1f}% < 35%)")
+            if r["deliv_20d_pct"] is not None and float(r["deliv_20d_pct"]) < 35.0:
+                reasons.append(f"Low 20D NSE Delivery ({r['deliv_20d_pct']:.1f}% < 35%)")
             if r["shield_status"] == "Risk":
                 reasons.append("Balance-Sheet Risk (" + ", ".join(r["shield_flags"]) + ")")
             skipped_smart_money.append(
@@ -336,6 +358,7 @@ def generate_rebalance_ticket(
                     "symbol": sym,
                     "rank": r["rank"],
                     "deliv_pct": r["deliv_pct"],
+                    "deliv_20d_pct": r["deliv_20d_pct"],
                     "shield_status": r["shield_status"],
                     "reason": " + ".join(reasons),
                 }
@@ -610,6 +633,7 @@ def generate_rebalance_ticket(
         dm = deliv_map.get(o["symbol"])
         if dm:
             o["deliv_pct"] = dm["deliv_pct"]
+            o["deliv_20d_pct"] = dm.get("deliv_20d_pct", dm["deliv_pct"])
             o["deliv_surge_pct"] = dm["deliv_surge_pct"]
             o["smart_money_tag"] = dm["tag"]
             o["smart_money_tone"] = dm["tone"]
@@ -623,6 +647,7 @@ def generate_rebalance_ticket(
                 else {"status": "Clean", "flags": []}
             )
             o["deliv_pct"] = None
+            o["deliv_20d_pct"] = None
             o["deliv_surge_pct"] = None
             o["smart_money_tag"] = None
             o["smart_money_tone"] = "neutral"
@@ -663,6 +688,8 @@ def generate_rebalance_ticket(
             "vol_target_pct": round(vol_target * 100.0, 1) if vol_target else None,
             "skip_earnings_blackout": skip_earnings_blackout,
             "enforce_smart_money_shield": enforce_smart_money_shield,
+            "delivery_shield_window_days": 20,
+            "delivery_shield_threshold_pct": 35.0,
             "cost_model": "indian_statutory_delivery_adv" if use_statutory_costs else "flat_bps",
             "cost_bps": cost_bps,
         },

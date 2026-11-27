@@ -8,7 +8,7 @@ import numpy as np
 
 from .config import DEFAULT_COST_BPS, VOL_INDEX_SYMBOL
 from .database import Database
-from .portfolio_backtester import run_oos_portfolio_backtest
+from .portfolio_backtester import build_backtest_market_context, run_oos_portfolio_backtest
 from .shortlister import build_shortlist
 
 
@@ -27,6 +27,7 @@ def run_quantitative_stress_tests(
       4. Weight Perturbation & Ranking Stability Stress
     """
     vol_target = None if risk_profile.lower() == "growth" else 0.18
+    market_ctx = build_backtest_market_context(db)
     base = run_oos_portfolio_backtest(
         db,
         top_k=top_k,
@@ -34,6 +35,7 @@ def run_quantitative_stress_tests(
         cost_bps=DEFAULT_COST_BPS,
         regime_gate=regime_gate,
         vol_target=vol_target,
+        market_ctx=market_ctx,
     )
     p_rets = np.array(base["_daily_returns"], dtype=float)
     s_rets = np.array(base["_spy_daily_returns"], dtype=float)
@@ -49,6 +51,7 @@ def run_quantitative_stress_tests(
             cost_bps=bps,
             regime_gate=regime_gate,
             vol_target=vol_target,
+            market_ctx=market_ctx,
         )
         pm = res["portfolio_metrics"]
         slippage_rows.append(

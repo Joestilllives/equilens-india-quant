@@ -156,7 +156,7 @@ def test_v6_execution_ticket_and_paper_ledger_lifecycle(tmp_path) -> None:
     assert all(isinstance(o["target_shares"], int) and o["target_shares"] >= 0 for o in t_bal["orders"])
     assert all(o["target_weight_pct"] <= 12.1 for o in t_bal["orders"])
     assert all(o.get("shield_status") != "Risk" for o in t_bal["orders"])
-    assert all(o.get("deliv_pct") is None or o["deliv_pct"] >= 35.0 for o in t_bal["orders"])
+    assert all(o.get("deliv_20d_pct") is None or o["deliv_20d_pct"] >= 35.0 for o in t_bal["orders"])
     assert t_bal["config"]["dd_brake_trigger_pct"] == -10.0
     assert t_bal["config"]["goldbees_reserve_pct"] == 30.0
     assert abs((t_bal["summary"]["liquidcase_alloc_inr"] + t_bal["summary"]["goldbees_alloc_inr"]) - t_bal["summary"]["liquidcase_cash_inr"]) <= 0.05

@@ -336,6 +336,8 @@ def get_money_signals_summary(db: Database) -> dict[str, Any]:
         avg_turn = float(np.mean([r["turnover_lacs"] for r in prev_rows]))
 
         deliv_now = float(latest["deliv_pct"])
+        deliv_20d_rows = rows_sorted[-20:]
+        deliv_20d = float(np.mean([float(r["deliv_pct"]) for r in deliv_20d_rows]))
         deliv_surge = deliv_now - avg_deliv
         ticket_ratio = float(latest["avg_trade_val_inr"]) / max(1.0, avg_ticket)
         turn_ratio = float(latest["turnover_lacs"]) / max(1.0, avg_turn)
@@ -344,7 +346,7 @@ def get_money_signals_summary(db: Database) -> dict[str, Any]:
         sm_score = float(
             np.clip(
                 45.0
-                + (deliv_now - 45.0) * 0.75
+                + (deliv_20d - 45.0) * 0.75
                 + deliv_surge * 0.85
                 + (ticket_ratio - 1.0) * 20.0
                 + (turn_ratio - 1.0) * 8.0,
@@ -353,15 +355,15 @@ def get_money_signals_summary(db: Database) -> dict[str, Any]:
             )
         )
 
-        if deliv_now >= 55.0 and deliv_surge >= 5.0:
+        if deliv_20d < 35.0:
+            tag = "Low 20D Delivery / Intraday"
+            tone = "warning"
+        elif deliv_now >= 55.0 and deliv_surge >= 5.0:
             tag = "High Delivery Surge"
             tone = "bullish"
-        elif deliv_now >= 52.0:
+        elif deliv_20d >= 52.0 or deliv_now >= 52.0:
             tag = "High Delivery Conc."
             tone = "bullish"
-        elif deliv_now < 35.0:
-            tag = "Low Delivery / Intraday"
-            tone = "warning"
         else:
             tag = "Moderate Delivery"
             tone = "neutral"
@@ -373,6 +375,8 @@ def get_money_signals_summary(db: Database) -> dict[str, Any]:
             "sector": t_meta.get("sector", "Other"),
             "as_of_date": latest["date"],
             "deliv_pct": round(deliv_now, 1),
+            "deliv_20d_pct": round(deliv_20d, 1),
+            "deliv_obs_20d": len(deliv_20d_rows),
             "avg_deliv_pct": round(avg_deliv, 1),
             "deliv_surge_pct": round(deliv_surge, 1),
             "turnover_cr": round(float(latest["turnover_lacs"]) / 100.0, 2),

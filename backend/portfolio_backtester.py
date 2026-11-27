@@ -16,6 +16,7 @@ Portfolio-level strictly out-of-sample Shortlist Backtester (EquiLens India V7 A
 
 from __future__ import annotations
 
+from bisect import bisect_left
 from typing import Any
 
 import numpy as np
@@ -180,15 +181,49 @@ def apply_drawdown_brake_and_gold_reserve(
     return out
 
 
-def _prior_delivery_pct(deliv_hist: dict[str, dict[str, float]] | None, sym: str, dt: str) -> float | None:
-    """Return strictly prior-day (T-1) NSE delivery % for `sym` before `dt`, or None if unavailable."""
+def _build_causal_delivery_20d_lookup(
+    deliv_hist: dict[str, dict[str, float]] | None,
+    window: int = 20,
+) -> dict[str, tuple[list[str], np.ndarray]]:
+    """Precompute sorted dates & trailing `window`-day rolling mean NSE delivery % per symbol."""
+    if not deliv_hist:
+        return {}
+    out: dict[str, tuple[list[str], np.ndarray]] = {}
+    w = max(1, int(window))
+    for sym, sym_map in deliv_hist.items():
+        if not sym_map:
+            continue
+        dts = sorted(sym_map.keys())
+        vals = np.array([float(sym_map[d]) for d in dts], dtype=float)
+        csum = np.concatenate(([0.0], np.cumsum(vals)))
+        idx = np.arange(len(vals))
+        starts = np.maximum(0, idx - w + 1)
+        rolling = (csum[idx + 1] - csum[starts]) / (idx - starts + 1).astype(float)
+        out[sym] = (dts, rolling)
+    return out
+
+
+def _prior_delivery_pct(
+    deliv_hist: dict[str, Any] | None,
+    sym: str,
+    dt: str,
+    window: int = 20,
+) -> float | None:
+    """Return strictly prior-day (T-1) trailing `window`-day mean NSE delivery % before `dt`, or None."""
     if not deliv_hist or sym not in deliv_hist:
         return None
-    sym_map = deliv_hist[sym]
-    prior_dates = [d for d in sym_map.keys() if d < dt]
+    entry = deliv_hist[sym]
+    if isinstance(entry, tuple) and len(entry) == 2:
+        dts, rolling = entry
+        pos = bisect_left(dts, dt) - 1
+        if pos < 0:
+            return None
+        return float(rolling[pos])
+    prior_dates = sorted(d for d in entry.keys() if d < dt)
     if not prior_dates:
         return None
-    return float(sym_map[max(prior_dates)])
+    tail = prior_dates[-max(1, int(window)) :]
+    return float(np.mean([float(entry[d]) for d in tail]))
 
 
 def _simulate_single_tranche(
@@ -384,9 +419,20 @@ def _simulate_single_tranche(
                 sec = sector_map.get(sym, "Other")
                 sec_counts[sec] = sec_counts.get(sec, 0) + 1
 
-            # Rank-Buffer hysteresis: hold existing winners while inside Top-30 buffer and still tradable
+            def _passes_delivery_shield(sym: str, cur_dt: str) -> bool:
+                if not enforce_smart_money_shield:
+                    return True
+                d_prev = _prior_delivery_pct(deliv_history, sym, cur_dt)
+                return d_prev is None or d_prev >= 35.0
+
+            # Rank-Buffer hysteresis: hold existing winners while inside Top-30 buffer, tradable, and passing 20D delivery shield
             for sym in list(current_weights.keys()):
-                if rank_map.get(sym, 999) <= rank_buffer and _is_tradable(sym, dt) and _can_add(sym):
+                if (
+                    rank_map.get(sym, 999) <= rank_buffer
+                    and _is_tradable(sym, dt)
+                    and _passes_delivery_shield(sym, dt)
+                    and _can_add(sym)
+                ):
                     _add(sym)
 
             for sym in day_slice["symbol"].tolist():
@@ -394,17 +440,15 @@ def _simulate_single_tranche(
                     break
                 if sym in chosen or not _is_tradable(sym, dt) or not _can_add(sym):
                     continue
-                if enforce_smart_money_shield:
-                    d_prev = _prior_delivery_pct(deliv_history, sym, dt)
-                    if d_prev is not None and d_prev < 35.0:
-                        continue
+                if not _passes_delivery_shield(sym, dt):
+                    continue
                 _add(sym)
 
             if len(chosen) < top_k:
                 for sym in day_slice["symbol"].tolist():
                     if len(chosen) >= top_k:
                         break
-                    if sym in chosen or not _is_tradable(sym, dt):
+                    if sym in chosen or not _is_tradable(sym, dt) or not _passes_delivery_shield(sym, dt):
                         continue
                     chosen.append(sym)
 
@@ -642,6 +686,8 @@ def build_backtest_market_context(db: Database) -> dict[str, Any]:
     four_factors_df = build_causal_nse_four_factors(
         prices_df, eval_bench_series.pct_change().fillna(0.0), annual_rf=0.062
     )
+    raw_deliv_hist = db.get_nse_delivery_history() if hasattr(db, "get_nse_delivery_history") else {}
+    deliv_20d_lookup = _build_causal_delivery_20d_lookup(raw_deliv_hist, window=20)
     idx_loc = {d: i for i, d in enumerate(prices_df.index)}
 
     return {
@@ -663,6 +709,7 @@ def build_backtest_market_context(db: Database) -> dict[str, Any]:
         "gold_nifty_chg": gold_nifty_chg,
         "gold_inr_ret_series": gold_inr_ret_series,
         "four_factors_df": four_factors_df,
+        "deliv_20d_lookup": deliv_20d_lookup,
         "idx_loc": idx_loc,
     }
 
@@ -685,7 +732,7 @@ def run_oos_portfolio_backtest(
     use_statutory_costs: bool = True,
     enable_dd_brake: bool = True,
     gold_reserve_share: float = GOLDBEES_RESERVE_SHARE,
-    enforce_smart_money_shield: bool = False,
+    enforce_smart_money_shield: bool = True,
     oos_override: list[dict[str, Any]] | pd.DataFrame | None = None,
     market_ctx: dict[str, Any] | None = None,
     oos_by_date_override: dict[str, pd.DataFrame] | None = None,
@@ -740,7 +787,12 @@ def run_oos_portfolio_backtest(
     offsets = sorted({(rebalance_days * t) // effective_tranches for t in range(effective_tranches)})
     per_tranche_cap = float(initial_capital) / max(1, len(offsets))
 
-    deliv_history = db.get_nse_delivery_history() if (enforce_smart_money_shield and hasattr(db, "get_nse_delivery_history")) else None
+    if enforce_smart_money_shield:
+        deliv_history = ctx.get("deliv_20d_lookup")
+        if deliv_history is None and hasattr(db, "get_nse_delivery_history"):
+            deliv_history = _build_causal_delivery_20d_lookup(db.get_nse_delivery_history(), window=20)
+    else:
+        deliv_history = None
     eff_weighting = weighting_mode if inv_vol_weight else "equal"
 
     tranche_rets: list[np.ndarray] = []
@@ -931,7 +983,7 @@ def run_oos_portfolio_backtest(
     actual_rank_buffer = min(top_k * 3, 40)
 
     return {
-        "strategy_id": "v7_live_parity" if enforce_smart_money_shield else STRATEGY_ID_ML,
+        "strategy_id": "v75_core_delivery_shield" if enforce_smart_money_shield else STRATEGY_ID_ML,
         "config": {
             "top_k": top_k,
             "rebalance_days": rebalance_days,
@@ -951,6 +1003,8 @@ def run_oos_portfolio_backtest(
             "enable_dd_brake": enable_dd_brake,
             "gold_reserve_share_pct": round(gold_reserve_share * 100.0, 1),
             "enforce_smart_money_shield": enforce_smart_money_shield,
+            "delivery_shield_window_days": 20,
+            "delivery_shield_threshold_pct": 35.0,
             "benchmark_symbol": eval_bench_sym,
             "benchmark_type": eval_bench_type,
             "initial_capital": initial_capital,
